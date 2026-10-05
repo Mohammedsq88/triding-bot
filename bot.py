@@ -16,7 +16,7 @@ app = Flask(__name__)
 def home():
     return "🤖 SMC + AI Trading Bot is active and running!"
 
-# إعدادات التليجرام للبوت الصحيح
+# إعدادات التليجرام
 TELEGRAM_TOKEN = "8669845166:AAffLfdsgcuE14wFZwBv1tXEQFYPeNcIsFQ"
 TELEGRAM_CHAT_ID = "2041253195"
 SYMBOL = "EURUSD=X"
@@ -31,13 +31,15 @@ def send_telegram_message(message):
     }
     try:
         response = requests.post(url, json=payload, timeout=10)
+        print(f"Telegram API Response Status: {response.status_code}", flush=True)
         if response.status_code != 200:
-            print(f"⚠️ خطأ من تليجرام: {response.text}")
+            print(f"⚠️ خطأ من تليجرام: {response.text}", flush=True)
     except Exception as e:
-        print(f"خطأ في الاتصال بتليجرام: {e}")
+        print(f"خطأ في الاتصال بتليجرام: {e}", flush=True)
 
 def fetch_data(symbol, interval='1h', period='5d'):
     """جلب البيانات التاريخية من ياهو فاينانس"""
+    print(f"جاري جلب البيانات لـ {symbol}...", flush=True)
     df = yf.download(symbol, period=period, interval=interval, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.droplevel(1)
@@ -94,11 +96,15 @@ def train_and_predict_xgboost(df):
 
 def run_trading_bot():
     """حلقة عمل البوت المستمرة"""
-    print("🤖 بوت التداول المؤسسي (SMC + AI) يعمل الآن بنجاح...")
-    send_telegram_message("🚀 *تم إقلاع بوت التداول المؤسسي المطور بنجاح!*\nالأنظمة المفعلة: هيكلية 1H + مناطق البريميوم والديسكاونت + نموذج الذكاء الاصطناعي XGBoost.")
+    print("🤖 بوت التداول المؤسسي (SMC + AI) بدأ بالعمل...", flush=True)
+    try:
+        send_telegram_message("🚀 *تم إقلاع بوت التداول المؤسسي المطور بنجاح!*\nالأنظمة المفعلة: هيكلية 1H + مناطق البريميوم والديسكاونت + نموذج الذكاء الاصطناعي XGBoost.")
+    except Exception as e:
+        print(f"خطأ في إرسال رسالة الإقلاع: {e}", flush=True)
     
     while True:
         try:
+            print("جاري تحليل السوق والدورة الجديدة...", flush=True)
             df_1h = fetch_data(SYMBOL, interval='1h', period='5d')
             smc_data = analyze_smc_structure(df_1h)
             prediction, probability = train_and_predict_xgboost(df_1h)
@@ -125,7 +131,7 @@ def run_trading_bot():
                     f"📍 السعر الحالي: `{smc_data['current_price']:.5f}`\n"
                     f"📊 الاتجاه العام (1H): صاعد (BULLISH)\n"
                     f"🏷 المنطقة السعرية: `Discount (منطقة رخص - شراء)`\n"
-                    f"⚖️️ خط المنتصف (EQ): `{smc_data['equilibrium']:.5f}`\n"
+                    f"⚖ خط المنتصف (EQ): `{smc_data['equilibrium']:.5f}`\n"
                     f"🤖 ثقة الذكاء الاصطناعي: `{probability*100:.1f}%`"
                 )
                 send_telegram_message(msg)
@@ -144,7 +150,7 @@ def run_trading_bot():
                 send_telegram_message(msg)
 
         except Exception as e:
-            print(f"خطأ أثناء التشغيل: {e}")
+            print(f"❌ خطأ أثناء التشغيل داخل الحلقة: {e}", flush=True)
             
         time.sleep(3600)
 
