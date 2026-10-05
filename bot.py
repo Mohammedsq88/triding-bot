@@ -17,9 +17,9 @@ def home():
     return "🤖 Gold SMC + AI Trading Bot is active and running!"
 
 # إعدادات التليجرام وتغيير الرمز إلى الذهب (GC=X)
-TELEGRAM_TOKEN = "8669845166:AAffLfdsgcuE14wFZwBv1tXEQFYPeNcIsFQ"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = "2041253195"
-SYMBOL = "GC=X"  # رمز الذهب (Gold Futures) على ياهو فاينانس
+SYMBOL = "GC=F" # رمز الذهب (Gold Futures) على ياهو فاينانس
 
 def send_telegram_message(message):
     """إرسال التنبيهات إلى التليجرام مع طباعة السبب في حال وجود خطأ"""
