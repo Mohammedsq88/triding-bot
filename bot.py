@@ -17,7 +17,7 @@ def home():
     return "🤖 SMC + AI Trading Bot is active and running!"
 
 # إعدادات التليجرام
-TELEGRAM_TOKEN = "8669845166:AAffLfdsgcuE14wFZwBv1tXEQFYPeNcIsFQ"
+TELEGRAM_TOKEN = "8669845166:AAFfLfdsgcuE14wFZwBvltXEQFYPeNcIsFQ"
 TELEGRAM_CHAT_ID = "2041253195"
 SYMBOL = "EURUSD=X"
 
