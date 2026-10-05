@@ -14,12 +14,12 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 SMC + AI Trading Bot is active and running!"
+    return "🤖 Gold SMC + AI Trading Bot is active and running!"
 
-# إعدادات التليجرام
-TELEGRAM_TOKEN = "8669845166:AAFfLfdsgcuE14wFZwBvltXEQFYPeNcIsFQ"
+# إعدادات التليجرام وتغيير الرمز إلى الذهب (GC=X)
+TELEGRAM_TOKEN = "8669845166:AAffLfdsgcuE14wFZwBv1tXEQFYPeNcIsFQ"
 TELEGRAM_CHAT_ID = "2041253195"
-SYMBOL = "EURUSD=X"
+SYMBOL = "GC=X"  # رمز الذهب (Gold Futures) على ياهو فاينانس
 
 def send_telegram_message(message):
     """إرسال التنبيهات إلى التليجرام مع طباعة السبب في حال وجود خطأ"""
@@ -31,7 +31,6 @@ def send_telegram_message(message):
     }
     try:
         response = requests.post(url, json=payload, timeout=10)
-        print(f"Telegram API Response Status: {response.status_code}", flush=True)
         if response.status_code != 200:
             print(f"⚠️ خطأ من تليجرام: {response.text}", flush=True)
     except Exception as e:
@@ -39,7 +38,6 @@ def send_telegram_message(message):
 
 def fetch_data(symbol, interval='1h', period='5d'):
     """جلب البيانات التاريخية من ياهو فاينانس"""
-    print(f"جاري جلب البيانات لـ {symbol}...", flush=True)
     df = yf.download(symbol, period=period, interval=interval, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.droplevel(1)
@@ -95,16 +93,15 @@ def train_and_predict_xgboost(df):
     return prediction, prob
 
 def run_trading_bot():
-    """حلقة عمل البوت المستمرة"""
-    print("🤖 بوت التداول المؤسسي (SMC + AI) بدأ بالعمل...", flush=True)
+    """حلقة عمل البوت المستمرة للذهب"""
+    print("🤖 بوت تداول الذهب المؤسسي (SMC + AI) بدأ بالعمل...", flush=True)
     try:
-        send_telegram_message("🚀 *تم إقلاع بوت التداول المؤسسي المطور بنجاح!*\nالأنظمة المفعلة: هيكلية 1H + مناطق البريميوم والديسكاونت + نموذج الذكاء الاصطناعي XGBoost.")
+        send_telegram_message("🚀 *تم إقلاع بوت تداول الذهب (Gold) المؤسسي بنجاح!*\nالأنظمة المفعلة: هيكلية 1H + مناطق البريميوم والديسكاونت + نموذج الذكاء الاصطناعي XGBoost.")
     except Exception as e:
         print(f"خطأ في إرسال رسالة الإقلاع: {e}", flush=True)
     
     while True:
         try:
-            print("جاري تحليل السوق والدورة الجديدة...", flush=True)
             df_1h = fetch_data(SYMBOL, interval='1h', period='5d')
             smc_data = analyze_smc_structure(df_1h)
             prediction, probability = train_and_predict_xgboost(df_1h)
@@ -125,26 +122,26 @@ def run_trading_bot():
             
             if can_buy:
                 msg = (
-                    f"🟢 *إشارة شراء مؤسسية مؤكدة (BUY)*\n"
+                    f"🟢 *إشارة شراء ذهب مؤسسية مؤكدة (BUY)*\n"
                     f"⏱ الوقت: {now_str}\n"
-                    f"💱 الزوج: EUR/USD\n"
-                    f"📍 السعر الحالي: `{smc_data['current_price']:.5f}`\n"
+                    f"🟡 الأداة: الذهب (Gold - GC=X)\n"
+                    f"📍 السعر الحالي: `{smc_data['current_price']:.2f}`\n"
                     f"📊 الاتجاه العام (1H): صاعد (BULLISH)\n"
                     f"🏷 المنطقة السعرية: `Discount (منطقة رخص - شراء)`\n"
-                    f"⚖ خط المنتصف (EQ): `{smc_data['equilibrium']:.5f}`\n"
+                    f"⚖ خط المنتصف (EQ): `{smc_data['equilibrium']:.2f}`\n"
                     f"🤖 ثقة الذكاء الاصطناعي: `{probability*100:.1f}%`"
                 )
                 send_telegram_message(msg)
                 
             elif can_sell:
                 msg = (
-                    f"🔴 *إشارة بيع مؤسسية مؤكدة (SELL)*\n"
+                    f"🔴 *إشارة بيع ذهب مؤسسية مؤكدة (SELL)*\n"
                     f"⏱ الوقت: {now_str}\n"
-                    f"💱 الزوج: EUR/USD\n"
-                    f"📍 السعر الحالي: `{smc_data['current_price']:.5f}`\n"
+                    f"🟡 الأداة: الذهب (Gold - GC=X)\n"
+                    f"📍 السعر الحالي: `{smc_data['current_price']:.2f}`\n"
                     f"📊 الاتجاه العام (1H): هابط (BEARISH)\n"
                     f"🏷 المنطقة السعرية: `Premium (منطقة غلاء - بيع)`\n"
-                    f"⚖️ خط المنتصف (EQ): `{smc_data['equilibrium']:.5f}`\n"
+                    f"⚖️ خط المنتصف (EQ): `{smc_data['equilibrium']:.2f}`\n"
                     f"🤖 ثقة الذكاء الاصطناعي: `{(1-probability)*100:.1f}%` هبوط"
                 )
                 send_telegram_message(msg)
