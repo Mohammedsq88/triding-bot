@@ -16,13 +16,13 @@ app = Flask(__name__)
 def home():
     return "🤖 SMC + AI Trading Bot is active and running!"
 
-# إعدادات التليجرام
-TELEGRAM_TOKEN = "8281384306"
+# التتوكن المستخرج من BotFather لصالح Mohammed_triding_bot
+TELEGRAM_TOKEN = "8669845166:AAffLfdsgcuE14wFZwBv1tXEQFYPeNcIsFQ"
 TELEGRAM_CHAT_ID = "2041253195"
 SYMBOL = "EURUSD=X"
 
 def send_telegram_message(message):
-    """إرسال التنبيهات إلى التليجرام"""
+    """إرسال التنبيهات إلى التليجرام مع طباعة السبب في حال وجود خطأ"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -30,9 +30,11 @@ def send_telegram_message(message):
         "parse_mode": "Markdown"
     }
     try:
-        requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code != 200:
+            print(f"⚠️ خطأ من تليجرام: {response.text}")
     except Exception as e:
-        print(f"خطأ في إرسال التليجرام: {e}")
+        print(f"خطأ في الاتصال بتليجرام: {e}")
 
 def fetch_data(symbol, interval='1h', period='5d'):
     """جلب البيانات التاريخية من ياهو فاينانس"""
@@ -123,7 +125,7 @@ def run_trading_bot():
                     f"📍 السعر الحالي: `{smc_data['current_price']:.5f}`\n"
                     f"📊 الاتجاه العام (1H): صاعد (BULLISH)\n"
                     f"🏷 المنطقة السعرية: `Discount (منطقة رخص - شراء)`\n"
-                    f"⚖️ خط المنتصف (EQ): `{smc_data['equilibrium']:.5f}`\n"
+                    f"⚖ خط المنتصف (EQ): `{smc_data['equilibrium']:.5f}`\n"
                     f"🤖 ثقة الذكاء الاصطناعي: `{probability*100:.1f}%`"
                 )
                 send_telegram_message(msg)
@@ -136,7 +138,7 @@ def run_trading_bot():
                     f"📍 السعر الحالي: `{smc_data['current_price']:.5f}`\n"
                     f"📊 الاتجاه العام (1H): هابط (BEARISH)\n"
                     f"🏷 المنطقة السعرية: `Premium (منطقة غلاء - بيع)`\n"
-                    f"⚖️ خط المنتصف (EQ): `{smc_data['equilibrium']:.5f}`\n"
+                    f"⚖️ خط المنتصف (EQ): `{smc_data['equilibrium']:[cite: 11] .5f}`\n"
                     f"🤖 ثقة الذكاء الاصطناعي: `{(1-probability)*100:.1f}%` هبوط"
                 )
                 send_telegram_message(msg)
@@ -147,11 +149,9 @@ def run_trading_bot():
         time.sleep(3600)
 
 if __name__ == "__main__":
-    # تشغيل البوت في خيط (Thread) منفصل لكي لا يعطل خادم الويب
     bot_thread = threading.Thread(target=run_trading_bot)
     bot_thread.daemon = True
     bot_thread.start()
     
-    # تشغيل خادم فلاسك ليطابق متطلبات Render للـ Port
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
