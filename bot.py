@@ -16,7 +16,7 @@ app = Flask(__name__)
 def home():
     return "🤖 SMC + AI Trading Bot is active and running!"
 
-# التتوكن المستخرج من BotFather لصالح Mohammed_triding_bot
+# إعدادات التليجرام للبوت الصحيح
 TELEGRAM_TOKEN = "8669845166:AAffLfdsgcuE14wFZwBv1tXEQFYPeNcIsFQ"
 TELEGRAM_CHAT_ID = "2041253195"
 SYMBOL = "EURUSD=X"
@@ -125,7 +125,7 @@ def run_trading_bot():
                     f"📍 السعر الحالي: `{smc_data['current_price']:.5f}`\n"
                     f"📊 الاتجاه العام (1H): صاعد (BULLISH)\n"
                     f"🏷 المنطقة السعرية: `Discount (منطقة رخص - شراء)`\n"
-                    f"⚖ خط المنتصف (EQ): `{smc_data['equilibrium']:.5f}`\n"
+                    f"⚖️️ خط المنتصف (EQ): `{smc_data['equilibrium']:.5f}`\n"
                     f"🤖 ثقة الذكاء الاصطناعي: `{probability*100:.1f}%`"
                 )
                 send_telegram_message(msg)
@@ -138,7 +138,7 @@ def run_trading_bot():
                     f"📍 السعر الحالي: `{smc_data['current_price']:.5f}`\n"
                     f"📊 الاتجاه العام (1H): هابط (BEARISH)\n"
                     f"🏷 المنطقة السعرية: `Premium (منطقة غلاء - بيع)`\n"
-                    f"⚖️ خط المنتصف (EQ): `{smc_data['equilibrium']:[cite: 11] .5f}`\n"
+                    f"⚖️ خط المنتصف (EQ): `{smc_data['equilibrium']:.5f}`\n"
                     f"🤖 ثقة الذكاء الاصطناعي: `{(1-probability)*100:.1f}%` هبوط"
                 )
                 send_telegram_message(msg)
