@@ -11,12 +11,12 @@ app = Flask(__name__)
 # استدعاء المتغيرات السرية من إعدادات المنصة (Render)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-SYMBOL = "XAUUSD=X"  # تم التعديل إلى الذهب الفوري (Spot Gold) ليتطابق تماماً مع TradingView و MT4
+SYMBOL = "GC=F"  # الرمز الأكثر استقراراً وموثوقية في ياهو فاينانس
 
 def send_telegram_message(message):
     """دالة مسؤولة عن إرسال الرسائل إلى بوت التليجرام"""
     if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("⚠️ تنبيه: بيانات التليجرام (Token أو Chat ID) غير مُعرفة في المتغيرات البيئية!")
+        print("⚠️ تنبيه: بيانات التليجرام غير مُعرفة في المتغيرات البيئية!")
         return False
     
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -38,7 +38,7 @@ def send_telegram_message(message):
         return False
 
 def get_gold_data_safely():
-    """جلب بيانات الذهب الفوري بدقة عالية وتصفية الأخطاء"""
+    """جلب بيانات الذهب بشكل مستقر وآمن لتجنب أي أخطاء"""
     try:
         session = requests.Session()
         session.headers.update({
@@ -69,11 +69,11 @@ def get_gold_data_safely():
         return None, None, None, str(e)
 
 def analyze_market_and_generate_report():
-    """تحليل شارت الذهب الفوري وتكوين التقرير الساعي"""
+    """تحليل شارت الذهب وتكوين التقرير الساعي"""
     data, current_price, change_pct, error = get_gold_data_safely()
     
     if error or current_price is None:
-        return f"⚠️ عذراً محمد، حدث خطأ مؤقت في جلب بيانات الذهب:\n`{error}`"
+        return f"⚠️️ عذراً محمد، حدث خطأ مؤقت في جلب بيانات الذهب:\n`{error}`"
 
     rolling_mean = data['Close'].rolling(10).mean().iloc[-1]
     trend = "صاعد 🟢" if current_price > rolling_mean else "هابط 🔴"
@@ -85,7 +85,7 @@ def analyze_market_and_generate_report():
     zone = "منطقة خصم (Discount Zone - فرصة للشراء)" if current_price < equilibrium else "منطقة تضخم (Premium Zone - فرصة للبيع)"
     
     report_text = f"""
-📊 *التقرير الساعي للذهب الفوري XAUUSD (SMC/ICT)* 📊
+📊 *التقرير الساعي لسوق الذهب (SMC/ICT)* 📊
 ⏱ *الوقت:* {time.strftime('%Y-%m-%d %H:%M')} (UTC)
 
 *📍 السعر الحالي:* `{current_price:.2f}` USD ({change_pct:+.2f}%)
@@ -100,8 +100,8 @@ def analyze_market_and_generate_report():
 
 def hourly_scheduler():
     time.sleep(5)
-    print("🤖 جاري إرسال رسالة الفحص والتأكيد للتليجرام...")
-    startup_msg = "🚀 *مرحباً محمد! تم تحديث البوت ليعمل حصراً على أسعار الذهب الفوري (XAUUSD).* الأسعار الآن مطابقة لمنصات التداول."
+    print("🤖 جاري إرسال رسالة التأكيد للتليجرام...")
+    startup_msg = "🚀 *مرحباً محمد! تم إعادة ضبط البوت على مصدر البيانات المستقر (GC=F).* البوت يعمل الآن بكفاءة عالية وبدون انقطاع."
     send_telegram_message(startup_msg)
 
     while True:
@@ -111,12 +111,12 @@ def hourly_scheduler():
 
 @app.route("/")
 def home():
-    return "Gold Spot (XAUUSD) SMC Trading Bot is active and synchronized!"
+    return "Stable Gold Trading Bot is active and running!"
 
 if __name__ == "__main__":
     reporter_thread = threading.Thread(target=hourly_scheduler, daemon=True)
     reporter_thread.start()
-    print("🚀 تم تشغيل نظام التقارير بنجاح على الذهب الفوري.")
+    print("🚀 تم تشغيل نظام التقارير بنجاح.")
 
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
