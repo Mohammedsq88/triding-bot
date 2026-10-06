@@ -11,7 +11,7 @@ app = Flask(__name__)
 # استدعاء المتغيرات السرية من إعدادات المنصة (Render)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-SYMBOL = "GC=F"  # رمز عقد الذهب الآجلة
+SYMBOL = "XAUUSD=X"  # تم التعديل إلى الذهب الفوري (Spot Gold) ليتطابق تماماً مع TradingView و MT4
 
 def send_telegram_message(message):
     """دالة مسؤولة عن إرسال الرسائل إلى بوت التليجرام"""
@@ -38,7 +38,7 @@ def send_telegram_message(message):
         return False
 
 def get_gold_data_safely():
-    """جلب بيانات الذهب بدقة عالية وتصحيح أعمدة yfinance وفلترة الأخطاء"""
+    """جلب بيانات الذهب الفوري بدقة عالية وتصفية الأخطاء"""
     try:
         session = requests.Session()
         session.headers.update({
@@ -53,7 +53,6 @@ def get_gold_data_safely():
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
 
-        # التأكد من وجود عمود الإغلاق (Close) وتصفية القيم الفارغة
         if 'Close' not in data.columns:
             return None, None, None, "⚠️ عمود الإغلاق (Close) غير متوفر في البيانات."
 
@@ -70,7 +69,7 @@ def get_gold_data_safely():
         return None, None, None, str(e)
 
 def analyze_market_and_generate_report():
-    """تحليل شارت الذهب وتكوين التقرير الساعي بدقة"""
+    """تحليل شارت الذهب الفوري وتكوين التقرير الساعي"""
     data, current_price, change_pct, error = get_gold_data_safely()
     
     if error or current_price is None:
@@ -86,7 +85,7 @@ def analyze_market_and_generate_report():
     zone = "منطقة خصم (Discount Zone - فرصة للشراء)" if current_price < equilibrium else "منطقة تضخم (Premium Zone - فرصة للبيع)"
     
     report_text = f"""
-📊 *التقرير الساعي لسوق الذهب (SMC/ICT)* 📊
+📊 *التقرير الساعي للذهب الفوري XAUUSD (SMC/ICT)* 📊
 ⏱ *الوقت:* {time.strftime('%Y-%m-%d %H:%M')} (UTC)
 
 *📍 السعر الحالي:* `{current_price:.2f}` USD ({change_pct:+.2f}%)
@@ -102,7 +101,7 @@ def analyze_market_and_generate_report():
 def hourly_scheduler():
     time.sleep(5)
     print("🤖 جاري إرسال رسالة الفحص والتأكيد للتليجرام...")
-    startup_msg = "🚀 *مرحباً محمد! تم تحديث كود البوت بنجاح.* تم ضبط جلب الأسعار بدقة تامة لضمان مطابقتها للواقع."
+    startup_msg = "🚀 *مرحباً محمد! تم تحديث البوت ليعمل حصراً على أسعار الذهب الفوري (XAUUSD).* الأسعار الآن مطابقة لمنصات التداول."
     send_telegram_message(startup_msg)
 
     while True:
@@ -112,12 +111,12 @@ def hourly_scheduler():
 
 @app.route("/")
 def home():
-    return "Gold SMC + AI Trading Bot is active with clean and precise data!"
+    return "Gold Spot (XAUUSD) SMC Trading Bot is active and synchronized!"
 
 if __name__ == "__main__":
     reporter_thread = threading.Thread(target=hourly_scheduler, daemon=True)
     reporter_thread.start()
-    print("🚀 تم تشغيل نظام التقارير التلقائية بدقة.")
+    print("🚀 تم تشغيل نظام التقارير بنجاح على الذهب الفوري.")
 
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
