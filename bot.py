@@ -31,46 +31,61 @@ class PrecisionInstitutionalEngine:
         
         return bias_1h, bias_5m
 
-    def analyze_structure_with_exact_levels(self):
+    def analyze_true_market_structure(self):
+        """التعديل الجذري: البحث حصراً عن القمم والقيعان الهيكلية الحقيقية (Swing High/Low)"""
         df = self.df_5m
-        if len(df) < 5:
-            return "بيانات غير كافية", "غير محدد", 0, 0, 0, 0
+        if len(df) < 10:
+            return "بيانات غير كافية للتحيكل الهيكلي", 0.0
 
-        last_candle = df.iloc[-1]
-        prev_candle = df.iloc[-2]
-        
-        body_close = last_candle['Close']
-        high_prev = prev_candle['High']
-        low_prev = prev_candle['Low']
+        window = 2  # عدد الشموع يمين ويسار القمة لتأكيد أنها سوينغ حقيقي
+        recent_highs = []
+        recent_lows = []
+
+        for i in range(window, len(df) - window):
+            is_swing_high = True
+            is_swing_low = True
+            
+            for j in range(1, window + 1):
+                if df['High'].iloc[i] < df['High'].iloc[i-j] or df['High'].iloc[i] < df['High'].iloc[i+j]:
+                    is_swing_high = False
+                if df['Low'].iloc[i] > df['Low'].iloc[i-j] or df['Low'].iloc[i] > df['Low'].iloc[i+j]:
+                    is_swing_low = False
+                    
+            if is_swing_high:
+                recent_highs.append(df['High'].iloc[i])
+            if is_swing_low:
+                recent_lows.append(df['Low'].iloc[i])
+
+        current_close = df['Close'].iloc[-1]
         
         erl_high = self.df_1h['High'].max()
         erl_low = self.df_1h['Low'].min()
         
         irl_high = df['High'].iloc[-5:].max()
         irl_low = df['Low'].iloc[-5:].min()
-        
-        structure_desc = "🔄 حركة داخلية مستقرة (No Break)"
+
+        structure_desc = "🔄 حركة داخلية ضمن النطاق (No Structural Break)"
         broken_level = 0.0
-        
-        if body_close > high_prev:
-            broken_level = float(high_prev)
-            if last_candle['High'] > body_close + 1.2:
-                structure_desc = f"⚡ اكتساح سيولة علوي (Liquidity Grab / Inducement) فوق المستوى: `{broken_level:.2f}`"
-            else:
-                structure_desc = f"✅ كسر هيكل صاعد حقيقي (True BOS Bullish) فوق القمة: `{broken_level:.2f}`"
-                
-        elif body_close < low_prev:
-            broken_level = float(low_prev)
-            if last_candle['Low'] < body_close - 1.2:
-                structure_desc = f"⚡ اكتساح سيولة سفلي (Liquidity Grab / Inducement) تحت المستوى: `{broken_level:.2f}`"
-            else:
-                structure_desc = f"✅ كسر هيكل هابط حقيقي (True BOS Bearish) تحت القاع: `{broken_level:.2f}`"
+
+        # التحقق من كسر آخر قمة هيكلية حقيقية للأعلى
+        if recent_highs:
+            last_swing_high = recent_highs[-1]
+            if current_close > last_swing_high:
+                broken_level = float(last_swing_high)
+                structure_desc = f"✅ كسر هيكل صاعد حقيقي (True BOS Bullish) فوق القمة الهيكلية: `{broken_level:.2f}`"
+
+        # التحقق من كسر آخر قاع هيكلي حقيقي للأسفل (إن لم يحدث كسر صاعد)
+        if recent_lows and broken_level == 0.0:
+            last_swing_low = recent_lows[-1]
+            if current_close < last_swing_low:
+                broken_level = float(last_swing_low)
+                structure_desc = f"✅ كسر هيكل هابط حقيقي (True BOS Bearish) تحت القاع الهيكلي: `{broken_level:.2f}`"
 
         return structure_desc, broken_level, erl_high, erl_low, irl_high, irl_low
 
     def execute_precision_strategy(self):
         bias_1h, bias_5m = self.get_market_bias()
-        structure_desc, broken_level, erl_high, erl_low, irl_high, irl_low = self.analyze_structure_with_exact_levels()
+        structure_desc, broken_level, erl_high, erl_low, irl_high, irl_low = self.analyze_true_market_structure()
         
         current_price = float(self.df_5m['Close'].iloc[-1])
         equilibrium = (erl_high + erl_low) / 2
@@ -80,25 +95,20 @@ class PrecisionInstitutionalEngine:
         signal = "⏳ مراقبة دقيقة لمستويات السيولة والترابط بين الإطارين..."
         tp1, tp2, suggested_sl = 0, 0, 0
         
-        # شروط الإشارة المؤكدة مع ضمان منطقية الأهداف بالنسبة لسعر التنفيذ
         if "Discount" in zone and "True BOS Bullish" in structure_desc and bias_1h.startswith("صاعد"):
-            signal = "🎯 **إشارة شراء قناصة مؤكدة (STRONG BUY)** - توافق اتجاه الساعة + كسر هيكل صاعد حقيقي!"
+            signal = "🎯 **إشارة شراء قناصة مؤكدة (STRONG BUY)** - توافق اتجاه الساعة + كسر هيكل صاعد حقيقي فوق قمة هيكلية!"
             
-            # ضمان أن الهدف الأول أعلى من سعر الدخول لصفقة الشراء حصراً
             tp1 = irl_high if irl_high > current_price else current_price + 3.0
             tp2 = erl_high if erl_high > tp1 else tp1 + 5.0
             suggested_sl = (broken_level - 1.5) if (broken_level > 0 and broken_level < current_price) else current_price - 4.0
             
         elif "Premium" in zone and "True BOS Bearish" in structure_desc and bias_1h.startswith("هابط"):
-            signal = "🎯 **إشارة بيع قناصة مؤكدة (STRONG SELL)** - توافق اتجاه الساعة + كسر هيكل هابط حقيقي!"
+            signal = "🎯 **إشارة بيع قناصة مؤكدة (STRONG SELL)** - توافق اتجاه الساعة + كسر هيكل هابط حقيقي تحت قاع هيكلي!"
             
-            # ضمان أن الهدف الأول أقل من سعر الدخول لصفقة البيع حصراً
             tp1 = irl_low if irl_low < current_price else current_price - 3.0
             tp2 = erl_low if erl_low < tp1 else tp1 - 5.0
             suggested_sl = (broken_level + 1.5) if (broken_level > 0 and broken_level > current_price) else current_price + 4.0
             
-        elif "Liquidity Grab" in structure_desc:
-            signal = "⚡ **تنبيه اكتساح سيولة (Sweep Alert)** - احتمالية انعكاس من مستويات السيولة الحالية، راقب الحذر!"
         else:
             signal = f"👁️ الحالة التشغيلية: السعر يتحرك بين مستويات السيولة الداخلية (IRL: [`{irl_low:.2f}` - `{irl_high:.2f}`]) والخارجية (ERL: [`{erl_low:.2f}` - `{erl_high:.2f}`])"
 
@@ -182,7 +192,7 @@ def analyze_market_and_generate_report():
 • 🚀 الهدف الثاني (ERL): `{res['tp2']:.2f}` USD"""
 
     report_text = f"""
-🧠 *التقرير الخوارزمي الدقيق (Multi-Timeframe SMC)* 🧠
+🧠 *التقرير الخوارزمي الدقيق (True Swing SMC)* 🧠
 ⏱ *الوقت:* {time.strftime('%Y-%m-%d %H:%M')} (UTC)
 
 *📍 السعر الحالي:* `{res['price']:.2f}` USD ({change_pct:+.2f}%)
@@ -203,8 +213,8 @@ def analyze_market_and_generate_report():
 
 def smart_monitoring_loop():
     time.sleep(5)
-    print("🤖 تفعيل محرك التقارير الدقيقة مع تصحيح منطق الأهداف...")
-    send_telegram_message("🚀 *مرحباً محمد! تم إصلاح وتصحيح منطق الأهداف بدقة تامة.* الآن أي صفقة شراء سيكون هدفها الأول أعلى من سعر الدخول حصراً، وأي صفقة بيع سيكون هدفها أقل منه.")
+    print("🤖 تفعيل محرك السوينغات الهيكلية الحقيقية...")
+    send_telegram_message("🚀 *مرحباً محمد! تم تحديث خوارزمية البوت لتعتمد على القمم والقيعان الهيكلية الحقيقية (Swing High/Low)* حصراً، ولن يتم اعتماد أي شمعة عادية عابرة كمستوى كسر بعد الآن.")
     
     last_signal_state = None
     last_hourly_report_time = 0
@@ -220,7 +230,7 @@ def smart_monitoring_loop():
                 is_strong = "STRONG BUY" in current_signal or "STRONG SELL" in current_signal
                 if is_strong and current_signal != last_signal_state:
                     instant_alert = f"""
-🚨 *تنبيه دخول قناص فوري (Precision Alert)* 🚨
+🚨 *تنبيه دخول قناص فوري (True Swing Alert)* 🚨
 ⏱ *الوقت:* {time.strftime('%Y-%m-%d %H:%M')} (UTC)
 
 *📍 سعر التنفيذ:* `{res['price']:.2f}` USD
@@ -246,12 +256,12 @@ def smart_monitoring_loop():
 
 @app.route("/")
 def home():
-    return "Precision MTF SMC Trading Bot with Validated Target Logic is Active!"
+    return "True Swing-Based MTF SMC Trading Bot is Active!"
 
 if __name__ == "__main__":
     monitor_thread = threading.Thread(target=smart_monitoring_loop, daemon=True)
     monitor_thread.start()
-    print("🚀 تم تشغيل البوت بنجاح بالصيغة المحدثة والمنطق السليم للأهداف.")
+    print("🚀 تم تشغيل البوت بنجاح بمعادلة السوينغات الحقيقية.")
 
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
