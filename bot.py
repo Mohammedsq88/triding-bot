@@ -149,43 +149,49 @@ class UnifiedInstitutionalSMCEngine:
         if len(df_1h) < 15 or len(df_5m) < 15:
             return "بيانات غير كافية", 0, 0, 0, 0, "محايد", "محايد", 0, 0, False, ""
 
-        # استخدام محرك السيولة الدقيق لـ 1H (ERL)
+        ref_close = self.live_price if self.live_price else float(df_1h['Close'].iloc[-1])
+        htf_bias = "صاعد (Bullish 📈)" if ref_close > float(df_1h['Close'].iloc[-5]) else "هابط (Bearish 📉)"
+
+        # 1. استخراج السيولة الخارجية (ERL) بدقة من الإطار العالي (1H) وتصفيتها بناءً على السعر الحالي
         engine_1h = SMC_Liquidity_Engine(df_1h)
         scan_1h = engine_1h.run_liquidity_scan()
         erl_highs = scan_1h["External_Liquidity_ERL"]["ERL_Highs"]
         erl_lows = scan_1h["External_Liquidity_ERL"]["ERL_Lows"]
         
-        erl_high = max(erl_highs) if erl_highs else float(df_1h['High'].max())
-        erl_low = min(erl_lows) if erl_lows else float(df_1h['Low'].min())
+        higher_erl = [h for h in erl_highs if h > ref_close]
+        lower_erl = [l for l in erl_lows if l < ref_close]
         
-        ref_close = self.live_price if self.live_price else float(df_1h['Close'].iloc[-1])
-        htf_bias = "صاعد (Bullish 📈)" if ref_close > float(df_1h['Close'].iloc[-5]) else "هابط (Bearish 📉)"
+        erl_high = min(higher_erl) if higher_erl else (max(erl_highs) if erl_highs else ref_close + 10.0)
+        erl_low = max(lower_erl) if lower_erl else (min(erl_lows) if erl_lows else ref_close - 10.0)
 
-        # استخدام محرك السيولة الدقيق لـ 5M (IRL & INF)
+        # 2. استخراج السيولة الداخلية (IRL) اعتماداً حصرياً على الفجوات (INF/FVG) على إطار 5M وعدم الخلط مع ERL
         engine_5m = SMC_Liquidity_Engine(df_5m)
         scan_5m = engine_5m.run_liquidity_scan()
-        irl_highs = scan_5m["External_Liquidity_ERL"]["ERL_Highs"]
-        irl_lows = scan_5m["External_Liquidity_ERL"]["ERL_Lows"]
         inf_list = scan_5m["Internal_Liquidity_IRL_INF"]
+        
+        bullish_inf_levels = [inf['Top'] for inf in inf_list if inf['Top'] > ref_close]
+        bearish_inf_levels = [inf['Bottom'] for inf in inf_list if inf['Bottom'] < ref_close]
+        
+        irl_high = min(bullish_inf_levels) if bullish_inf_levels else ref_close + 3.0
+        irl_low = max(bearish_inf_levels) if bearish_inf_levels else ref_close - 3.0
 
         arl_high, arl_low = self.get_asia_session_range()
-        
-        nearest_fvg = inf_list[-1]['Top'] if inf_list else (ref_close + 2.0 if "صاعد" in htf_bias else ref_close - 2.0)
-        irl_high = max(irl_highs) if irl_highs else nearest_fvg
-        irl_low = min(irl_lows) if irl_lows else nearest_fvg
 
         # فحص كسر الهيكل الحقيقي (True BOS)
         structure_status = "🔄 بانتظار تشكل كسر هيكل حقيقي (BOS)"
         broken_level = 0.0
 
-        if irl_highs:
-            last_swing_high = irl_highs[-1]
+        ltf_highs = scan_5m["External_Liquidity_ERL"]["ERL_Highs"]
+        ltf_lows = scan_5m["External_Liquidity_ERL"]["ERL_Lows"]
+
+        if ltf_highs:
+            last_swing_high = ltf_highs[-1]
             if self.validate_bos(df_5m, last_swing_high, "bullish") or (self.live_price and self.live_price > last_swing_high):
                 structure_status = f"✅ True BOS Bullish فوق: `{last_swing_high:.2f}`"
                 broken_level = last_swing_high
 
-        if irl_lows and broken_level == 0.0:
-            last_swing_low = irl_lows[-1]
+        if ltf_lows and broken_level == 0.0:
+            last_swing_low = ltf_lows[-1]
             if self.validate_bos(df_5m, last_swing_low, "bearish") or (self.live_price and self.live_price < last_swing_low):
                 structure_status = f"✅ True BOS Bearish تحت: `{last_swing_low:.2f}`"
                 broken_level = last_swing_low
@@ -197,7 +203,7 @@ class UnifiedInstitutionalSMCEngine:
             "Trading_Ranges_Identified": erl_high > erl_low,
             "Liquidity_Matrix_Valid": arl_high > 0 and arl_low > 0,
             "CDC_Killzones_Active": True,
-            "Order_Flow_And_POI_Rules_Met": len(inf_list) > 0 or len(irl_highs) > 0
+            "Order_Flow_And_POI_Rules_Met": len(inf_list) > 0 or len(ltf_highs) > 0
         }
         gate_passed, gate_msg = self.prerequisites_gate(state_matrix)
 
@@ -226,14 +232,14 @@ class UnifiedInstitutionalSMCEngine:
 
         if "صاعد" in htf_bias and "True BOS Bullish" in structure_status:
             trade_type = "🟢 صفقة شراء مؤسسية (STRONG BUY)"
-            signal = f"إشارة شراء متكاملة (باستخدام محرك السيولة الدقيق):\n{gate_msg}"
+            signal = f"إشارة شراء متكاملة (مستويات مفصولة بدقة ERL & IRL):\n{gate_msg}"
             tp1 = irl_high if irl_high > current_price else current_price + 3.0
             tp2 = erl_high if erl_high > tp1 else tp1 + 5.0
             sl = (broken_level - 1.5) if (broken_level > 0 and broken_level < current_price) else current_price - 4.0
 
         elif "هابط" in htf_bias and "True BOS Bearish" in structure_status:
             trade_type = "🔴 صفقة بيع مؤسسية (STRONG SELL)"
-            signal = f"إشارة بيع متكاملة (باستخدام محرك السيولة الدقيق):\n{gate_msg}"
+            signal = f"إشارة بيع متكاملة (مستويات مفصولة بدقة ERL & IRL):\n{gate_msg}"
             tp1 = irl_low if irl_low < current_price else current_price - 3.0
             tp2 = erl_low if erl_low < tp1 else tp1 - 5.0
             sl = (broken_level + 1.5) if (broken_level > 0 and broken_level > current_price) else current_price + 4.0
@@ -305,15 +311,15 @@ def generate_report():
 • 🚀 الهدف الثاني (TP2 - ERL): `{res['tp2']:.2f}` USD"""
 
     report = f"""
-🧠 *التقرير المؤسسي المتكامل (محرك السيولة الدقيق)* 🧠
+🧠 *التقرير المؤسسي المتكامل (تصحيح نطاقات السيولة)* 🧠
 ⏱ *الوقت (بغداد):* {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
 
 *📍 السعر الفوري اللحظي:* `{res['price']:.2f}` USD ({change_pct:+.2f}%)
 *📈 اتجاه الإطار العالي (1H):* {res['htf_bias']}
-*📊 مصفوفة السيولة المؤسسية الدقيقة:*
+*📊 مستويات السيولة المفصولة بدقة:*
   - نطاق آسيا (ARL): [`{res['arl_low']:.2f}` - `{res['arl_high']:.2f}`]
-  - سيولة داخلية (IRL): [`{res['irl_low']:.2f}` - `{res['irl_high']:.2f}`]
-  - سيولة خارجية (ERL): [`{res['erl_low']:.2f}` - `{res['erl_high']:.2f}`]
+  - سيولة داخلية (IRL - عبر الفجوات FVG): [`{res['irl_low']:.2f}` - `{res['irl_high']:.2f}`]
+  - سيولة خارجية (ERL - سوينغات الإطار العالي): [`{res['erl_low']:.2f}` - `{res['erl_high']:.2f}`]
 *🔍 حالة الهيكل وبوابة الشروط:* {res['structure']}
 {targets_block}
 
@@ -325,7 +331,7 @@ def generate_report():
 
 def monitoring_loop():
     time.sleep(5)
-    send_telegram_message(f"🚀 *تم تشغيل بوت القناص مع محرك السيولة الدقيق والفصل الرابع!* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
+    send_telegram_message(f"🚀 *تم تشغيل البوت بنسخة فصل السيولة (ERL و IRL منفصلة تماماً)!* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
     
     last_signal = None
     last_report_time = 0
@@ -346,7 +352,7 @@ def monitoring_loop():
                 is_strong = "STRONG BUY" in res['trade_type'] or "STRONG SELL" in res['trade_type']
                 if is_strong and res['trade_type'] != last_signal:
                     instant_alert = f"""
-🚨 *تنبيه دخول قناص مؤسسي (مع محرك السيولة الجديد)* 🚨
+🚨 *تنبيه دخول قناص مؤسسي (دقة المستويات المفصولة)* 🚨
 ⏱ *الوقت (بغداد):* {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
 
 📌 *نوع الصفقة:* {res['trade_type']}
@@ -366,7 +372,7 @@ def monitoring_loop():
 
 @app.route("/")
 def home():
-    return "SMC Bot with Accurate Liquidity Engine is Running Perfectly!"
+    return "SMC Bot with Corrected Separate Liquidity Levels is Running!"
 
 if __name__ == "__main__":
     t = threading.Thread(target=monitoring_loop, daemon=True)
