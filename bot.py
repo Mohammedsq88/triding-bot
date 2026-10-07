@@ -14,7 +14,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 SYMBOL = "GC=F"
 
-# معامل التصحيح الدقيق للسعر والقمة والقاع
+# معامل التصحيح الدقيق للسعر (يمكنك تعديل هذا الرقم إذا لاحظت أي فرق بسيط مع شارتك)
 PRICE_OFFSET = -27.5  
 
 # دالة الحصول على وقت بغداد الحالي (UTC+3)
@@ -53,6 +53,35 @@ class TrueInstitutionalEngine:
             
         return bias_1h, bias_5m
 
+    def analyze_external_liquidity_1h(self):
+        """ استخراج السيولة الخارجية (ERL) بدقة بناءً على السوينغات الحقيقية لفريم الساعة """
+        df = self.df_1h
+        if len(df) < 10:
+            return float(df['High'].max()), float(df['Low'].min())
+            
+        window = 3
+        swing_highs = []
+        swing_lows = []
+        
+        for i in range(window, len(df) - window):
+            is_sh = True
+            is_sl = True
+            for j in range(1, window + 1):
+                if df['High'].iloc[i] < df['High'].iloc[i-j] or df['High'].iloc[i] < df['High'].iloc[i+j]:
+                    is_sh = False
+                if df['Low'].iloc[i] > df['Low'].iloc[i-j] or df['Low'].iloc[i] > df['Low'].iloc[i+j]:
+                    is_sl = False
+            if is_sh:
+                swing_highs.append(df['High'].iloc[i])
+            if is_sl:
+                swing_lows.append(df['Low'].iloc[i])
+                
+        # اختيار القمة والقاع الهيكلي الأبرز للسيولة الخارجية
+        erl_high = float(swing_highs[-1]) if swing_highs else float(df['High'].max())
+        erl_low = float(swing_lows[-1]) if swing_lows else float(df['Low'].min())
+        
+        return erl_high, erl_low
+
     def analyze_true_market_structure(self):
         df = self.df_5m
         if len(df) < 10:
@@ -79,8 +108,8 @@ class TrueInstitutionalEngine:
 
         current_close = df['Close'].iloc[-1]
         
-        erl_high = self.df_1h['High'].max()
-        erl_low = self.df_1h['Low'].min()
+        # استدعاء السيولة الخارجية الحقيقية من فريم الساعة
+        erl_high, erl_low = self.analyze_external_liquidity_1h()
         
         irl_high = df['High'].iloc[-5:].max()
         irl_low = df['Low'].iloc[-5:].min()
@@ -225,7 +254,7 @@ def analyze_market_and_generate_report():
 
 def smart_monitoring_loop():
     time.sleep(5)
-    send_telegram_message(f"🚀 *تم تحديث تنسيق تنبيهات القناص وتوقيت بغداد بنجاح!* الوقت الحالي: {get_baghdad_time()}")
+    send_telegram_message(f"🚀 *تم تحديث خوارزمية السيولة الخارجية (ERL) وتصحيح السعر بنجاح!* الوقت الحالي: {get_baghdad_time()}")
     
     last_signal_state = None
     last_report_time = 0
@@ -249,7 +278,6 @@ def smart_monitoring_loop():
                 is_strong = "STRONG BUY" in res['trade_type'] or "STRONG SELL" in res['trade_type']
                 if is_strong and res['trade_type'] != last_signal_state:
                     
-                    # الرسالة بالتنسيق الدقيق المطلوب بالأرقام وتوقيت بغداد
                     instant_alert = f"""
 🚨 *تنبيه دخول قناص فوري (Precision Alert)* 🚨
 ⏱ *الوقت (توقيت بغداد):* {get_baghdad_time()}
@@ -271,7 +299,7 @@ def smart_monitoring_loop():
 
 @app.route("/")
 def home():
-    return "Baghdad Time Precision SMC Bot is Active!"
+    return "ERL Corrected SMC Bot is Active!"
 
 if __name__ == "__main__":
     monitor_thread = threading.Thread(target=smart_monitoring_loop, daemon=True)
