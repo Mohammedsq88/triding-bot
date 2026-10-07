@@ -5,7 +5,7 @@ import requests
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from flask import Flask
 
 app = Flask(__name__)
@@ -16,6 +16,11 @@ SYMBOL = "GC=F"
 
 # معامل التصحيح الدقيق للسعر والقمة والقاع
 PRICE_OFFSET = -27.5  
+
+# دالة الحصول على وقت بغداد الحالي (UTC+3)
+def get_baghdad_time():
+    baghdad_tz = timezone(timedelta(hours=3))
+    return datetime.now(baghdad_tz).strftime('%Y-%m-%d %H:%M')
 
 class TrueInstitutionalEngine:
     def __init__(self, df_1h, df_5m):
@@ -107,22 +112,25 @@ class TrueInstitutionalEngine:
         zone = "Discount (منطقة خصم - مسموح الشراء 🟢)" if current_price < equilibrium else "Premium (منطقة تضخم - مسموح البيع 🔴)"
         
         signal = "⏳ مراقبة دقيقة لترتيب الاتجاه والسيولة..."
+        trade_type = "غير محدد"
         tp1, tp2, suggested_sl = 0, 0, 0
         
         if "صاعد" in bias_1h and "صاعد" in bias_5m and "True BOS Bullish" in structure_desc:
-            signal = "🎯 **إشارة شراء قناصة مؤكدة (STRONG BUY)** - توافق تام في الاتجاهين الصاعدين!"
+            trade_type = "🟢 صفقة شراء (STRONG BUY)"
+            signal = "إشارة شراء قناصة مؤكدة - توافق تام في الاتجاهين الصاعدين!"
             tp1 = irl_high if irl_high > current_price else current_price + 3.0
             tp2 = erl_high if erl_high > tp1 else tp1 + 5.0
             suggested_sl = (broken_level - 1.5) if (broken_level > 0 and broken_level < current_price) else current_price - 4.0
             
         elif "هابط" in bias_1h and "هابط" in bias_5m and "True BOS Bearish" in structure_desc:
-            signal = "🎯 **إشارة بيع قناصة مؤكدة (STRONG SELL)** - توافق تام في الاتجاهين الهابطين (نزول مؤسسي)!"
+            trade_type = "🔴 صفقة بيع (STRONG SELL)"
+            signal = "إشارة بيع قناصة مؤكدة - توافق تام في الاتجاهين الهابطين!"
             tp1 = irl_low if irl_low < current_price else current_price - 3.0
             tp2 = erl_low if erl_low < tp1 else tp1 - 5.0
             suggested_sl = (broken_level + 1.5) if (broken_level > 0 and broken_level > current_price) else current_price + 4.0
             
         else:
-            signal = f"👁️ الحالة التشغيلية: الاتجاه العام (1H: {bias_1h} | 5m: {bias_5m}) | السعر يتحرك بين مستويات السيولة (IRL: [`{irl_low:.2f}` - `{irl_high:.2f}`])"
+            signal = f"👁️ الحالة التشغيلية: الاتجاه العام (1H: {bias_1h} | 5m: {bias_5m})"
 
         return {
             "price": current_price,
@@ -130,14 +138,15 @@ class TrueInstitutionalEngine:
             "bias_5m": bias_5m,
             "zone": zone,
             "structure": structure_desc,
-            "erl_high": erl_high,
-            "erl_low": erl_low,
-            "irl_high": irl_high,
-            "irl_low": irl_low,
+            "trade_type": trade_type,
             "signal": signal,
             "tp1": tp1,
             "tp2": tp2,
-            "sl": suggested_sl
+            "sl": suggested_sl,
+            "irl_high": irl_high,
+            "irl_low": irl_low,
+            "erl_high": erl_high,
+            "erl_low": erl_low
         }
 
 def send_telegram_message(message):
@@ -190,13 +199,13 @@ def analyze_market_and_generate_report():
     if res['tp1'] > 0:
         targets_block = f"""
 🎯 *مستويات التنفيذ والمخاطرة:*
-• 🛑 وقف الخسارة المقترح: `{res['sl']:.2f}` USD
-• 🎯 الهدف الأول: `{res['tp1']:.2f}` USD
-• 🚀 الهدف الثاني: `{res['tp2']:.2f}` USD"""
+• 🛑 وقف الخسارة: `{res['sl']:.2f}` USD
+• 🎯 الهدف الأول (TP1): `{res['tp1']:.2f}` USD
+• 🚀 الهدف الثاني (TP2): `{res['tp2']:.2f}` USD"""
 
     report_text = f"""
 🧠 *التقرير الدوري المفصل (كل 15 دقيقة)* 🧠
-⏱ *الوقت:* {time.strftime('%Y-%m-%d %H:%M')} (UTC)
+⏱ *الوقت (توقيت بغداد):* {get_baghdad_time()}
 
 *📍 السعر الحالي:* `{res['price']:.2f}` USD ({change_pct:+.2f}%)
 *📈 اتجاه فريم الساعة (1H Bias):* {res['bias_1h']}
@@ -216,16 +225,16 @@ def analyze_market_and_generate_report():
 
 def smart_monitoring_loop():
     time.sleep(5)
-    send_telegram_message("🚀 *تم تحديث النظام بنجاح!* البوت الآن سيرسل لك تقريراً مفصلاً ومحدثاً بالكامل **كل 15 دقيقة** لتتمكن من متابعة واختبار صحة القراءات بكل سهولة.")
+    send_telegram_message(f"🚀 *تم تحديث تنسيق تنبيهات القناص وتوقيت بغداد بنجاح!* الوقت الحالي: {get_baghdad_time()}")
     
     last_signal_state = None
-    last_report_time = 0  # تتبع وقت آخر تقرير دوري
+    last_report_time = 0
 
     while True:
         try:
             current_time = time.time()
             
-            # إرسال تقرير مفصل كل 15 دقيقة (900 ثانية)
+            # تقرير دوري كل 15 دقيقة
             if current_time - last_report_time >= 900:
                 report = analyze_market_and_generate_report()
                 send_telegram_message(report)
@@ -236,29 +245,33 @@ def smart_monitoring_loop():
             if not error:
                 engine = TrueInstitutionalEngine(df_1h, df_5m)
                 res = engine.execute_precision_strategy()
-                current_signal = res['signal']
                 
-                is_strong = "STRONG BUY" in current_signal or "STRONG SELL" in current_signal
-                if is_strong and current_signal != last_signal_state:
+                is_strong = "STRONG BUY" in res['trade_type'] or "STRONG SELL" in res['trade_type']
+                if is_strong and res['trade_type'] != last_signal_state:
+                    
+                    # الرسالة بالتنسيق الدقيق المطلوب بالأرقام وتوقيت بغداد
                     instant_alert = f"""
-🚨 *تنبيه دخول قناص فوري (Instant Alert)* 🚨
-⏱ *الوقت:* {time.strftime('%Y-%m-%d %H:%M')} (UTC)
-*📍 السعر:* `{res['price']:.2f}` | *1H:* {res['bias_1h']} | *5m:* {res['bias_5m']}
-{current_signal}
+🚨 *تنبيه دخول قناص فوري (Precision Alert)* 🚨
+⏱ *الوقت (توقيت بغداد):* {get_baghdad_time()}
+
+📌 *نوع الصفقة:* {res['trade_type']}
+📍 *سعر الدخول:* `{res['price']:.2f}` USD
+🛑 *وقف الخسارة:* `{res['sl']:.2f}` USD
+🎯 *الهدف الأول (TP1):* `{res['tp1']:.2f}` USD
+🚀 *الهدف الثاني (TP2):* `{res['tp2']:.2f}` USD
 -----------------------------------
 """
                     send_telegram_message(instant_alert)
-                    last_signal_state = current_signal
+                    last_signal_state = res['trade_type']
                     
         except Exception as e:
             print(f"❌ خطأ في الحلقة: {e}")
             
-        # فحص دوري كل 60 ثانية لمراقبة التنبيهات الفورية بدقة
         time.sleep(60)
 
 @app.route("/")
 def home():
-    return "15-Min Periodic Reporting SMC Bot is Active!"
+    return "Baghdad Time Precision SMC Bot is Active!"
 
 if __name__ == "__main__":
     monitor_thread = threading.Thread(target=smart_monitoring_loop, daemon=True)
