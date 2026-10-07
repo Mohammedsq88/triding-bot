@@ -17,90 +17,109 @@ SYMBOL = "GC=F"
 # معامل التصحيح الدقيق للسعر والقمة والقاع
 PRICE_OFFSET = -27.5  
 
-class MultiTimeframeSMCEngine:
+class PrecisionInstitutionalEngine:
     def __init__(self, df_1h, df_5m):
         self.df_1h = df_1h
         self.df_5m = df_5m
-        
-    def analyze_htf_macro(self):
-        """تحليل فريم الساعة (HTF) لتحديد النطاق والـ POI الكبرى"""
-        df = self.df_1h
-        if len(df) < 5:
-            return None, "بيانات 1H غير كافية"
-            
-        recent_high = df['High'].max()
-        recent_low = df['Low'].min()
-        equilibrium = (recent_high + recent_low) / 2
-        current_price = df['Close'].iloc[-1]
-        
-        zone = "Discount (منطقة خصم 🟢)" if current_price < equilibrium else "Premium (منطقة تضخم 🔴)"
-        
-        # استخراج أوردر بلوك فريم الساعة (1H POI)
-        h_ob = None
-        for i in range(len(df)-2, 2, -1):
-            if zone.startswith("Discount") and df['Close'].iloc[i] > df['Open'].iloc[i]:
-                for j in range(i-1, max(0, i-4), -1):
-                    if df['Close'].iloc[j] < df['Open'].iloc[j]:
-                        h_ob = (df['Low'].iloc[j], df['High'].iloc[j])
-                        break
-                if h_ob: break
-            elif zone.startswith("Premium") and df['Close'].iloc[i] < df['Open'].iloc[i]:
-                for j in range(i-1, max(0, i-4), -1):
-                    if df['Close'].iloc[j] > df['Open'].iloc[j]:
-                        h_ob = (df['Low'].iloc[j], df['High'].iloc[j])
-                        break
-                if h_ob: break
-                
-        return {
-            "zone": zone,
-            "high": recent_high,
-            "low": recent_low,
-            "equilibrium": equilibrium,
-            "poi_1h": h_ob
-        }, None
 
-    def analyze_ltf_execution(self, htf_data):
-        """تحليل فريم الخمس دقائق (LTF) للبحث عن إشارة الدخول الدقيقة (CHoCH / Micro BOS)"""
-        df = self.df_5m
-        if len(df) < 5 or not htf_data:
-            return "⏳ بانتظار تشكل الهيكل على فريم 5 دقائق", 0, 0
-            
-        current_price = df['Close'].iloc[-1]
-        poi = htf_data["poi_1h"]
-        zone = htf_data["zone"]
+    def get_market_bias(self):
+        """الطلب الأول: تحديد اتجاه السعر على فريم الساعة وفريم الـ 5 دقائق"""
+        # اتجاه فريم الساعة (1H) بناءً على آخر إغلاقات و متوسط الحركة
+        close_1h = self.df_1h['Close']
+        bias_1h = "صاعد (Bullish 📈)" if close_1h.iloc[-1] > close_1h.iloc[-3] else "هابط (Bearish 📉)"
         
-        # فحص تفاعل السعر مع أوردر بلوك الساعة على فريم الـ 5 دقائق
-        near_poi = False
-        if poi and poi[0] - 2.0 <= current_price <= poi[1] + 2.0:
-            near_poi = True
-            
-        # فحص الشموع الأخيرة على الـ 5 دقائق لاكتشاف تغيير الطابع (CHoCH)
+        # اتجاه فريم الـ 5 دقائق (5m) للزخم اللحظي
+        close_5m = self.df_5m['Close']
+        bias_5m = "صاعد (Bullish ⚡)" if close_5m.iloc[-1] > close_5m.iloc[-3] else "هابط (Bearish ⚡)"
+        
+        return bias_1h, bias_5m
+
+    def analyze_structure_with_exact_levels(self):
+        """الطلب الثاني والثالث: تحديد مستويات الكسر الدقيقة (BOS/LG) وأرقام السيولة (IRL/ERL)"""
+        df = self.df_5m
+        if len(df) < 5:
+            return "بيانات غير كافية", "غير محدد", 0, 0, 0, 0
+
         last_candle = df.iloc[-1]
         prev_candle = df.iloc[-2]
         
-        body_5m = last_candle['Close']
-        high_5m_prev = prev_candle['High']
-        low_5m_prev = prev_candle['Low']
+        body_close = last_candle['Close']
+        high_prev = prev_candle['High']
+        low_prev = prev_candle['Low']
         
-        signal = "👁️ مراقبة تفاعل فريم 5 دقائق مع منطقة الساعة (1H POI)"
-        tp1 = 0
-        tp2 = 0
+        # حساب النطاق والسيولة الداخلية (IRL) والخارجية (ERL) بالأرقام الدقيقة
+        erl_high = self.df_1h['High'].max()
+        erl_low = self.df_1h['Low'].min()
         
-        # إذا كان السعر في منطقة الخصم وقريب من POI وحدث كسر مصغر صاعد على الـ 5 دقائق
-        if "Discount" in zone and body_5m > high_5m_prev:
-            if near_poi or current_price < htf_data["equilibrium"]:
-                signal = "🎯 **إشارة شراء قناصة (STRONG BUY - 5m LTF Entry)** - تفاعل ناجح مع 1H POI + كسر هيكل مصغر على فريم 5 دقائق!"
-                tp1 = htf_data["equilibrium"]
-                tp2 = htf_data["high"]
+        # سيولة النطاق الداخلي (IRL) ممثلة بآخر قمة وقاع على فريم الـ 5 دقائق
+        irl_high = df['High'].iloc[-5:].max()
+        irl_low = df['Low'].iloc[-5:].min()
+        
+        # تقييم الهيكل مع ذكر المستوى السعري الدقيق الذي تم كسره
+        structure_desc = "🔄 حركة داخلية مستقرة (No Break)"
+        broken_level = 0.0
+        
+        if body_close > high_prev:
+            broken_level = float(high_prev)
+            if last_candle['High'] > body_close + 1.2:
+                structure_desc = f"⚡ اكتساح سيولة علوي (Liquidity Grab / Inducement) فوق المستوى: `{broken_level:.2f}`"
+            else:
+                structure_desc = f"✅ كسر هيكل صاعد حقيقي (True BOS Bullish) فوق القمة: `{broken_level:.2f}`"
                 
-        # إذا كان السعر في منطقة التضخم وقريب من POI وحدث كسر مصغر هابط على الـ 5 دقائق
-        elif "Premium" in zone and body_5m < low_5m_prev:
-            if near_poi or current_price > htf_data["equilibrium"]:
-                signal = "🎯 **إشارة بيع قناصة (STRONG SELL - 5m LTF Entry)** - تفاعل ناجح مع 1H POI + كسر هيكل مصغر على فريم 5 دقائق!"
-                tp1 = htf_data["equilibrium"]
-                tp2 = htf_data["low"]
-                
-        return signal, tp1, tp2
+        elif body_close < low_prev:
+            broken_level = float(low_prev)
+            if last_candle['Low'] < body_close - 1.2:
+                structure_desc = f"⚡ اكتساح سيولة سفلي (Liquidity Grab / Inducement) تحت المستوى: `{broken_level:.2f}`"
+            else:
+                structure_desc = f"✅ كسر هيكل هابط حقيقي (True BOS Bearish) تحت القاع: `{broken_level:.2f}`"
+
+        return structure_desc, broken_level, erl_high, erl_low, irl_high, irl_low
+
+    def execute_precision_strategy(self):
+        bias_1h, bias_5m = self.get_market_bias()
+        structure_desc, broken_level, erl_high, erl_low, irl_high, irl_low = self.analyze_structure_with_exact_levels()
+        
+        current_price = float(self.df_5m['Close'].iloc[-1])
+        equilibrium = (erl_high + erl_low) / 2
+        
+        zone = "Discount (منطقة خصم - مسموح الشراء 🟢)" if current_price < equilibrium else "Premium (منطقة تضخم - مسموح البيع 🔴)"
+        
+        signal = "⏳ مراقبة دقيقة لمستويات السيولة والترابط بين الإطارين..."
+        tp1, tp2, suggested_sl = 0, 0, 0
+        
+        # شروط الإشارة المؤكدة مع أرقام محددة
+        if "Discount" in zone and "True BOS Bullish" in structure_desc and bias_1h.startswith("صاعد"):
+            signal = "🎯 **إشارة شراء قناصة مؤكدة (STRONG BUY)** - توافق اتجاه الساعة + كسر هيكل صاعد حقيقي!"
+            tp1 = irl_high  # الهدف الأول: سيولة النطاق الداخلي بالأرقام
+            tp2 = erl_high  # الهدف الثاني: سيولة النطاق الخارجي الكبرى
+            suggested_sl = broken_level - 1.5  # وقف خسارة مقترح تحت مستوى الكسر بدقة
+            
+        elif "Premium" in zone and "True BOS Bearish" in structure_desc and bias_1h.startswith("هابط"):
+            signal = "🎯 **إشارة بيع قناصة مؤكدة (STRONG SELL)** - توافق اتجاه الساعة + كسر هيكل هابط حقيقي!"
+            tp1 = irl_low   # الهدف الأول: سيولة النطاق الداخلي بالأرقام
+            tp2 = erl_low   # الهدف الثاني: سيولة النطاق الخارجي الكبرى
+            suggested_sl = broken_level + 1.5  # وقف خسارة مقترح فوق مستوى الكسر بدقة
+            
+        elif "Liquidity Grab" in structure_desc:
+            signal = "⚡ **تنبيه اكتساح سيولة (Sweep Alert)** - احتمالية انعكاس من مستويات السيولة الحالية، راقب الحذر!"
+        else:
+            signal = f"👁️ الحالة التشغيلية: السعر يتحرك بين مستويات السيولة الداخلية (IRL: [`{irl_low:.2f}` - `{irl_high:.2f}`]) والخط الخارجي (ERL: [`{erl_low:.2f}` - `{erl_high:.2f}`])"
+
+        return {
+            "price": current_price,
+            "bias_1h": bias_1h,
+            "bias_5m": bias_5m,
+            "zone": zone,
+            "structure": structure_desc,
+            "erl_high": erl_high,
+            "erl_low": erl_low,
+            "irl_high": irl_high,
+            "irl_low": irl_low,
+            "signal": signal,
+            "tp1": tp1,
+            "tp2": tp2,
+            "sl": suggested_sl
+        }
 
 def send_telegram_message(message):
     if not TELEGRAM_TOKEN or not CHAT_ID:
@@ -121,26 +140,22 @@ def send_telegram_message(message):
         return False
 
 def get_multi_timeframe_data():
-    """سحب بيانات فريم الساعة وفريم الـ 5 دقائق مع تطبيق التصحيح الدقيق"""
     try:
         session = requests.Session()
         session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         })
         
-        # سحب بيانات الساعة (1H) للاتجاه العام
         df_1h = yf.download(SYMBOL, period="5d", interval="1h", progress=False, session=session)
-        # سحب بيانات الـ 5 دقائق (5m) للتنفيذ السريع
         df_5m = yf.download(SYMBOL, period="1d", interval="5m", progress=False, session=session)
         
         if df_1h.empty or df_5m.empty:
-            return None, None, "⚠️ فشل في سحب البيانات لأحد الإطارات الزمنية."
+            return None, None, "⚠️ فشل في سحب البيانات."
 
         for df in [df_1h, df_5m]:
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
 
-        # تطبيق التصحيح على الإطارين
         for df in [df_1h, df_5m]:
             df['Close'] = df['Close'] + PRICE_OFFSET
             df['Low'] = df['Low'] + PRICE_OFFSET
@@ -150,90 +165,96 @@ def get_multi_timeframe_data():
         prev_price = float(df_5m['Close'].iloc[-2])
         change_pct = ((current_price - prev_price) / prev_price) * 100
         
-        return df_1h, df_5m, current_price, change_pct, None
+        return df_1h, df_5m, change_pct, None
     except Exception as e:
-        return None, None, None, 0, str(e)
+        return None, None, str(e)
 
-def analyze_and_generate_mtf_report():
-    df_1h, df_5m, current_price, change_pct, error = get_multi_timeframe_data()
-    if error or current_price is None:
-        return f"⚠️ عذراً محمد، خطأ في جلب بيانات التحليل المزدوج:\n`{error}`"
+def analyze_market_and_generate_report():
+    df_1h, df_5m, change_pct, error = get_multi_timeframe_data()
+    if error: return f"⚠️ خطأ في جلب البيانات: {error}"
 
-    engine = MultiTimeframeSMCEngine(df_1h, df_5m)
-    htf_data, err = engine.analyze_htf_macro()
-    if err: return err
+    engine = PrecisionInstitutionalEngine(df_1h, df_5m)
+    res = engine.execute_precision_strategy()
     
-    signal, tp1, tp2 = engine.analyze_ltf_execution(htf_data)
-    
-    tp_text = f"\n🎯 *الأهداف المقترحة (5m Execution):*\n• الهدف الأول: `{tp1:.2f}` USD\n• الهدف الثاني: `{tp2:.2f}` USD" if tp1 > 0 else ""
-    
+    targets_block = ""
+    if res['tp1'] > 0:
+        targets_block = f"""
+🎯 *مستويات التنفيذ والمخاطرة المقترحة:*
+• 🛑 وقف الخسارة المقترح (Micro SL): `{res['sl']:.2f}` USD
+• 🎯 الهدف الأول (IRL): `{res['tp1']:.2f}` USD
+• 🚀 الهدف الثاني (ERL): `{res['tp2']:.2f}` USD"""
+
     report_text = f"""
-⚡ *التقرير المؤسسي المزدوج (1H Macro + 5m LTF)* ⚡
+🧠 *التقرير الخوارزمي الدقيق (Multi-Timeframe SMC)* 🧠
 ⏱ *الوقت:* {time.strftime('%Y-%m-%d %H:%M')} (UTC)
 
-*📍 السعر الحالي:* `{current_price:.2f}` USD ({change_pct:+.2f}%)
-*🗺 الاتجاه العام (1H Zone):* {htf_data['zone']}
-*📈 نطاق الساعة:* قمة `{htf_data['high']:.2f}` | قاع `{htf_data['low']:.2f}`
-{tp_text}
+*📍 السعر الحالي:* `{res['price']:.2f}` USD ({change_pct:+.2f}%)
+*📈 اتجاه فريم الساعة (1H Bias):* {res['bias_1h']}
+*⚡ اتجاه فريم الـ 5 دقائق (5m Bias):* {res['bias_5m']}
+*🗺 النطاق الاستراتيجي:* {res['zone']}
+*📊 مستويات السيولة الرقمية:*
+  - سيولة داخلية (IRL): [`{res['irl_low']:.2f}` - `{res['irl_high']:.2f}`]
+  - سيولة خارجية (ERL): [`{res['erl_low']:.2f}` - `{res['erl_high']:.2f}`]
+*⚡ تقييم الهيكل والكسر:* {res['structure']}
+{targets_block}
 
-*🚀 التوجيه التنفيذي (على فريم 5 دقائق):*
-{signal}
+*🚀 التوجيه التداولي الخوارزمي:*
+{res['signal']}
 -----------------------------------
 """
     return report_text
 
 def smart_monitoring_loop():
     time.sleep(5)
-    print("🤖 جاري تفعيل محرك التحليل المزدوج (1H + 5m)...")
-    startup_msg = "🚀 *مرحباً محمد! تم تفعيل نظام التحليل المزدوج بنجاح.* البوت الآن يراقب اتجاه الساعة (1H) وينفذ الصفقات على فريم الـ 5 دقائق (5m) بدقة القناص."
-    send_telegram_message(startup_msg)
+    print("🤖 تفعيل محرك التقارير الدقيقة (Precision Engine)...")
+    send_telegram_message("🚀 *مرحباً محمد! تم تحديث خوارزمية البوت بنجاح.* التقرير أصبح يذكر اتجاه الفريمين، مستويات الكسر الدقيقة بالأرقام، وأسعار مستويات السيولة (IRL/ERL) بوضوح تام.")
     
     last_signal_state = None
     last_hourly_report_time = 0
 
     while True:
         try:
-            df_1h, df_5m, current_price, change_pct, error = get_multi_timeframe_data()
-            if not error and current_price is not None:
-                engine = MultiTimeframeSMCEngine(df_1h, df_5m)
-                htf_data, _ = engine.analyze_htf_macro()
-                current_signal, _, _ = engine.analyze_ltf_execution(htf_data)
+            df_1h, df_5m, change_pct, error = get_multi_timeframe_data()
+            if not error:
+                engine = PrecisionInstitutionalEngine(df_1h, df_5m)
+                res = engine.execute_precision_strategy()
+                current_signal = res['signal']
                 
-                is_strong_signal = "STRONG BUY" in current_signal or "STRONG SELL" in current_signal
-                
-                if is_strong_signal and current_signal != last_signal_state:
-                    instant_msg = f"""
-🚨 *تنبيه دخول فوري (5m Sniper Entry)* 🚨
+                is_strong = "STRONG BUY" in current_signal or "STRONG SELL" in current_signal
+                if is_strong and current_signal != last_signal_state:
+                    instant_alert = f"""
+🚨 *تنبيه دخول قناص فوري (Precision Alert)* 🚨
 ⏱ *الوقت:* {time.strftime('%Y-%m-%d %H:%M')} (UTC)
 
-*📍 سعر التنفيذ:* `{current_price:.2f}` USD
-*🗺 الاتجاه العام (1H):* {htf_data['zone']}
-*🎯 الإشارة المنفذة:* 
+*📍 سعر التنفيذ:* `{res['price']:.2f}` USD
+*📈 اتجاه 1H:* {res['bias_1h']} | *5m:* {res['bias_5m']}
+*🛑 وقف الخسارة المقترح:* `{res['sl']:.2f}` USD
+*🎯 الأهداف:* IRL: `{res['tp1']:.2f}` | ERL: `{res['tp2']:.2f}`
+*🎯 الإشارة:* 
 {current_signal}
 -----------------------------------
 """
-                    send_telegram_message(instant_msg)
+                    send_telegram_message(instant_alert)
                     last_signal_state = current_signal
 
-                current_time = time.time()
-                if current_time - last_hourly_report_time >= 3600:
-                    report = analyze_and_generate_mtf_report()
+                if time.time() - last_hourly_report_time >= 3600:
+                    report = analyze_market_and_generate_report()
                     send_telegram_message(report)
-                    last_hourly_report_time = current_time
+                    last_hourly_report_time = time.time()
                     
         except Exception as e:
-            print(f"❌ خطأ في حلقة المراقبة المزدوجة: {e}")
+            print(f"❌ خطأ حلقة المراقبة: {e}")
             
-        time.sleep(300) # فحص مستمر كل 5 دقائق
+        time.sleep(300)
 
 @app.route("/")
 def home():
-    return "Multi-Timeframe 1H + 5m SMC Trading Bot is Active!"
+    return "Precision MTF SMC Trading Bot with Exact Level Reporting is Active!"
 
 if __name__ == "__main__":
     monitor_thread = threading.Thread(target=smart_monitoring_loop, daemon=True)
     monitor_thread.start()
-    print("🚀 تم تشغيل البوت بنظام القنص (1H + 5m) بنجاح.")
+    print("🚀 تم تشغيل البوت بنجاح بالصيغة المحدثة.")
 
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
