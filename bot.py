@@ -14,8 +14,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 SYMBOL = "GC=F"  # رمز العقود الآجلة المعتمد للاستقرار
 
-# معامل تصحيح السعر لمطابقة السعر الفوري (Spot XAUUSD) بدقة تامة
-PRICE_OFFSET = -24.0  
+# معامل تصحيح السعر المحدث بدقة تامية لمطابقة السعر الفوري (Spot XAUUSD)
+PRICE_OFFSET = -27.5  
 
 class SMCTradingEngine:
     def __init__(self, df):
@@ -29,9 +29,9 @@ class SMCTradingEngine:
         return df
 
     def calculate_premium_discount(self):
-        """حساب مناطق البريميوم والخصم (Premium & Discount)"""
-        recent_high = self.df['High'].tail(50).max()
-        recent_low = self.df['Low'].tail(50).min()
+        """حساب مناطق البريميوم والخصم (Premium & Discount) واستخراج القمة والقاع للنطاق"""
+        recent_high = self.df['High'].max()
+        recent_low = self.df['Low'].min()
         equilibrium = (recent_high + recent_low) / 2
         
         current_price = self.df['Close'].iloc[-1]
@@ -128,6 +128,8 @@ class SMCTradingEngine:
 
         return {
             "price": current_price,
+            "high": high,
+            "low": low,
             "zone": zone,
             "structure": structure_status,
             "ob_info": ob_status,
@@ -154,7 +156,7 @@ def send_telegram_message(message):
         return False
 
 def get_gold_data_safely():
-    """جلب بيانات الذهب وتطبيق معامل التصحيح الفوري"""
+    """جلب بيانات الذهب وتطبيق معامل التصحيح الفوري بدقة -27.5"""
     try:
         session = requests.Session()
         session.headers.update({
@@ -175,21 +177,21 @@ def get_gold_data_safely():
         if len(data) < 5:
             return None, None, None, "⚠️ البيانات غير كافية."
 
-        current_price = float(data['Close'].iloc[-1]) + PRICE_OFFSET
-        prev_price = float(data['Close'].iloc[-2]) + PRICE_OFFSET
-        change_pct = ((current_price - prev_price) / prev_price) * 100
-        
-        # تصحيح أعمدة الداتا فريم بالكامل ليتطابق مع الأسعار الفورية للتحليل
+        # تصحيح أعمدة الداتا فريم بالكامل بالمعامل الدقيق (-27.5)
         data['Close'] = data['Close'] + PRICE_OFFSET
         data['High'] = data['High'] + PRICE_OFFSET
         data['Low'] = data['Low'] + PRICE_OFFSET
+
+        current_price = float(data['Close'].iloc[-1])
+        prev_price = float(data['Close'].iloc[-2])
+        change_pct = ((current_price - prev_price) / prev_price) * 100
         
         return data, current_price, change_pct, None
     except Exception as e:
         return None, None, None, str(e)
 
 def analyze_market_and_generate_report():
-    """توليد التقرير الاحترافي مع محرك الذكاء المؤسسي"""
+    """توليد التقرير الاحترافي مع القمة والقاع ومحرك الذكاء المؤسسي"""
     data, current_price, change_pct, error = get_gold_data_safely()
     
     if error or current_price is None:
@@ -203,6 +205,8 @@ def analyze_market_and_generate_report():
 ⏱ *الوقت:* {time.strftime('%Y-%m-%d %H:%M')} (UTC)
 
 *📍 السعر الحالي (المصحح):* `{analysis['price']:.2f}` USD ({change_pct:+.2f}%)
+*📈 أعلى قمة بالنطاق:* `{analysis['high']:.2f}` USD
+*📉 أدنى قاع بالنطاق:* `{analysis['low']:.2f}` USD
 *🗺 النطاق الاستراتيجي:* {analysis['zone']}
 *⚡ حالة الهيكل والسيولة:* {analysis['structure']}
 *🧱 مناطق الأوردر بلوك (OB):* {analysis['ob_info']}
@@ -215,8 +219,8 @@ def analyze_market_and_generate_report():
 
 def hourly_scheduler():
     time.sleep(5)
-    print("🤖 جاري إرسال رسالة التأكيد للتليجرام...")
-    startup_msg = "🚀 *مرحباً محمد! تم إصلاح الخطأ البرمجي بنجاح.* البوت يعمل الآن بكفاءة كاملة مع محرك الذكاء المؤسسي."
+    print("🤖 جاري إرسال رسالة التحديث للتليجرام...")
+    startup_msg = "🚀 *مرحباً محمد! تم تحديث البوت بنجاح.* تم ضبط معامل التصحيح (-27.5) وإضافة عرض القمة والقاع في التقارير الساعية."
     send_telegram_message(startup_msg)
 
     while True:
@@ -226,12 +230,12 @@ def hourly_scheduler():
 
 @app.route("/")
 def home():
-    return "Institutional SMC Trading Bot is active and fixed!"
+    return "Institutional SMC Trading Bot with High/Low and Price Offset is Active!"
 
 if __name__ == "__main__":
     reporter_thread = threading.Thread(target=hourly_scheduler, daemon=True)
     reporter_thread.start()
-    print("🚀 تم تشغيل النظام بنجاح.")
+    print("🚀 تم تشغيل نظام التداول الذكي بنجاح مع التعديلات الجديدة.")
 
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
