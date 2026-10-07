@@ -20,17 +20,24 @@ def get_baghdad_time():
     return datetime.now(baghdad_tz)
 
 def get_live_spot_price():
-    """جلب السعر الفوري اللحظي الحقيقي لضمان التطابق التام مع شاشتك"""
+    """جلب السعر الفوري اللحظي مع طباعة التشخيص لمراقبة الـ API"""
+    print(f"Connecting to API URL: {GOLD_API_URL}")
     try:
-        response = requests.get(GOLD_API_URL, timeout=5)
+        response = requests.get(GOLD_API_URL, timeout=10)
+        print(f"API Status Code: {response.status_code}")
         if response.status_code == 200:
             data = response.json()
+            print(f"API Data Received: {str(data)[:150]}") # طباعة جزء من الرد للتأكد
+            
             live_data = data.get("liveXauusd", data)
-            price = live_data.get("Mid") or live_data.get("price")
+            price = live_data.get("Mid") or live_data.get("price") or live_data.get("Bid")
             if price:
+                print(f"Successfully extracted live spot price: {float(price)}")
                 return float(price)
+        else:
+            print(f"API Error Response: {response.text}")
     except Exception as e:
-        print(f"Live API Error: {e}")
+        print(f"Live API Exception Error: {e}")
     return None
 
 class ExactSMCBlueprintEngine:
@@ -40,7 +47,6 @@ class ExactSMCBlueprintEngine:
         self.live_price = live_price
 
     def get_swings(self, df, window=3):
-        """رصد القمم والقيعان بدقة تامة"""
         highs = []
         lows = []
         if len(df) < (window * 2 + 1):
@@ -63,7 +69,6 @@ class ExactSMCBlueprintEngine:
         return highs, lows
 
     def validate_bos(self, df, level, direction):
-        """التحقق من كسر الهيكل (BOS) عبر الإغلاق الحقيقي"""
         closes = df['Close'].dropna()
         if len(closes) == 0:
             return False
@@ -80,7 +85,6 @@ class ExactSMCBlueprintEngine:
         return False
 
     def get_asia_session_range(self):
-        """تحديد نطاق جلسة آسيا (ARL) بدقة لآخر يوم تداول"""
         df = self.df_5m
         if df.empty:
             return 0.0, 0.0
@@ -216,8 +220,10 @@ def fetch_data():
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
 
+        # جلب السعر الفوري المباشر الحقيقي مع التحقق
         live_price = get_live_spot_price()
         if not live_price:
+            print("WARNING: Live API failed, falling back to yfinance close price!")
             closes = df_5m['Close'].dropna()
             live_price = float(closes.iloc[-1]) if not closes.empty else 0.0
 
@@ -264,7 +270,7 @@ def generate_report():
 
 def monitoring_loop():
     time.sleep(5)
-    send_telegram_message(f"🚀 *تم تشغيل البوت بنجاح مع السعر اللحظي الفوري المباشر!* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
+    send_telegram_message(f"🚀 *تم تشغيل البوت بنجاح مع تتبع السعر اللحظي!* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
     
     last_signal = None
     last_report_time = 0
@@ -299,7 +305,7 @@ def monitoring_loop():
                     last_signal = res['trade_type']
                     
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Error in monitoring loop: {e}")
             
         time.sleep(60)
 
