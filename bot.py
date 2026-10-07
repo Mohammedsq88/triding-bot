@@ -14,20 +14,20 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 SYMBOL = "GC=F"
 
-# معامل تصحيح السعر بين الفيوتشرز والسبوت
-PRICE_OFFSET = -27.5  
+# معامل تصحيح السعر (يمكن ضبطه أو جعله 0 حسب الحاجة)
+PRICE_OFFSET = 0.0  
 
 def get_baghdad_time():
     baghdad_tz = timezone(timedelta(hours=3))
     return datetime.now(baghdad_tz)
 
-class AdvancedSMCBlueprintEngine:
+class CleanSMCBlueprintEngine:
     def __init__(self, df_1h, df_5m):
         self.df_1h = df_1h
         self.df_5m = df_5m
 
     def get_swings(self, df, window=3):
-        """ رصد السوينغات (القمم والقيعان) بدقة وفقاً لنافذة الفحص """
+        """ رصد السوينغات (القمم والقيعان) بدقة """
         highs = []
         lows = []
         if len(df) < (window * 2 + 1):
@@ -50,7 +50,7 @@ class AdvancedSMCBlueprintEngine:
         return highs, lows
 
     def validate_bos(self, df, level, direction):
-        """ التحقق من كسر الهيكل (BOS) الحقيقي عبر الإغلاق بجسم الشمعة وليس الفتيل فقط """
+        """ التحقق من كسر الهيكل (BOS) الحقيقي عبر الإغلاق بجسم الشمعة """
         if len(df) == 0:
             return False
         
@@ -66,93 +66,50 @@ class AdvancedSMCBlueprintEngine:
         return False
 
     def get_asia_session_range(self):
-        """ استخراج نطاق جلسة آسيا (ARL) لتحديد سيولة النطاق الداخلي الأساسية """
+        """ استخراج نطاق جلسة آسيا بدقة من بيانات الـ 5 دقائق """
         df = self.df_5m
         if df.empty:
             return 0.0, 0.0
         
-        # تحويل مؤشر الساعاتي إلى توقيت بغداد وفلترة ساعات آسيا (مثلاً من 03:00 إلى 09:00 صباحاً)
-        baghdad_tz = timezone(timedelta(hours=3))
         try:
-            df_local = df.copy()
-            df_local.index = pd.to_datetime(df_local.index).tz_convert(baghdad_tz)
-            today_asia = df_local[df_local.index.hour.isin([3, 4, 5, 6, 7, 8])]
-            if not today_asia.empty:
-                return float(today_asia['High'].max()), float(today_asia['Low'].min())
+            # تصفية الشموع التي تقع ضمن ساعات جلسة آسيا (توقيت UTC من 00:00 إلى 06:00)
+            df_utc = df.copy()
+            if df_utc.index.tz is None:
+                df_utc.index = pd.to_datetime(df_utc.index).tz_localize('UTC')
+            else:
+                df_utc.index = pd.to_datetime(df_utc.index).tz_convert('UTC')
+                
+            asia_candles = df_utc[df_utc.index.hour.isin([0, 1, 2, 3, 4, 5, 6])]
+            if not asia_candles.empty:
+                return float(asia_candles['High'].max()), float(asia_candles['Low'].min())
         except:
             pass
         
-        # كاحتياط في حال اختلاف صيغة التوقيت
-        return float(df['High'].iloc[-24:].max()), float(df['Low'].iloc[-24:].min())
-
-    def check_killzones(self):
-        """ التحقق من نوافذ الـ Killzones الزمنية (لندن ونيويورك بتوقيت بغداد) """
-        now_baghdad = get_baghdad_time()
-        hour = now_baghdad.hour
-        
-        # جلسة لندن: 10:00 إلى 13:00 بتوقيت بغداد
-        # جلسة نيويورك: 15:00 إلى 18:00 بتوقيت بغداد
-        is_london_kz = 10 <= hour < 13
-        is_ny_kz = 15 <= hour < 18
-        
-        if is_london_kz:
-            return True, "London Killzone نشطة 🟢"
-        elif is_ny_kz:
-            return True, "New York Killzone نشطة ⚡"
-        else:
-            return False, "خارج أوقات الـ Killzones الأساسية 💤"
-
-    def detect_cdc_and_sweep(self, arl_high, arl_low):
-        """ اكتشاف اكتساح سيولة آسيا (Sweep) وتغير الطابع (CDC) في الإطار المنخفض """
-        df = self.df_5m
-        if len(df) < 5:
-            return "لا توجد بيانات كافية للـ CDC", 0.0
-
-        current_high = float(df['High'].iloc[-1])
-        current_low = float(df['Low'].iloc[-1])
-        current_close = float(df['Close'].iloc[-1])
-        
-        sweep_status = "لا يوجد اكتساح حالي"
-        cdc_signal = 0.0
-
-        # فحص ما إذا تم اكتساح قمة آسيا (Sweep High) ثم العودة بإغلاق سلبي
-        if current_high > arl_high and current_close < arl_high:
-            sweep_status = "⚠️ تم اكتساح قمة آسيا (Asia High Sweep / Liquidity Grab)"
-            cdc_signal = -1.0 # إشارة انعكاس هابطة محتملة بعد الاكتساح
-
-        # فحص ما إذا تم اكتساح قاع آسيا (Sweep Low) ثم العودة بإغلاق إيجابي
-        elif current_low < arl_low and current_close > arl_low:
-            sweep_status = "⚠️ تم اكتساح قاع آسيا (Asia Low Sweep / Liquidity Grab)"
-            cdc_signal = 1.0 # إشارة انعكاس صاعدة محتملة بعد الاكتساح
-
-        return sweep_status, cdc_signal
+        # كاحتياط دقيق في حال عدم توفر التوقيت الزمني بالشكل المتوقع
+        return float(df['High'].iloc[-36:].max()), float(df['Low'].iloc[-36:].min())
 
     def analyze_market_structure(self):
         df_1h = self.df_1h
         df_5m = self.df_5m
 
         if len(df_1h) < 10 or len(df_5m) < 10:
-            return "بيانات غير كافية", 0, 0, 0, 0, "محايد", "محايد", 0, 0, "", 0
+            return "بيانات غير كافية", 0, 0, 0, 0, "محايد", "محايد", 0, 0
 
-        # 1. تحليل الإطار العالي (1H) للسيولة الخارجية والاتجاه
+        # 1. تحليل الإطار العالي (1H)
         h_highs_1h, h_lows_1h = self.get_swings(df_1h, window=3)
         erl_high = h_highs_1h[-1]['price'] if h_highs_1h else float(df_1h['High'].max())
         erl_low = h_lows_1h[-1]['price'] if h_lows_1h else float(df_1h['Low'].min())
         htf_bias = "صاعد (Bullish 📈)" if df_1h['Close'].iloc[-1] > df_1h['Close'].iloc[-5] else "هابط (Bearish 📉)"
 
-        # 2. نطاق جلسة آسيا والسيولة الداخلية (IRL)
+        # 2. نطاق جلسة آسيا (ARL) والسيولة الداخلية
         arl_high, arl_low = self.get_asia_session_range()
         h_highs_5m, h_lows_5m = self.get_swings(df_5m, window=2)
         irl_high = max(arl_high, h_highs_5m[-1]['price'] if h_highs_5m else float(df_5m['High'].iloc[-5:].max()))
         irl_low = min(arl_low, h_lows_5m[-1]['price'] if h_lows_5m else float(df_5m['Low'].iloc[-5:].min()))
         ltf_bias = "صاعد (Bullish ⚡)" if df_5m['Close'].iloc[-1] > df_5m['Close'].iloc[-6] else "هابط (Bearish ⚡)"
 
-        # 3. فحص الـ Killzone واكتساح السيولة والـ CDC
-        kz_active, kz_desc = self.check_killzones()
-        sweep_desc, cdc_val = self.detect_cdc_and_sweep(arl_high, arl_low)
-
-        # 4. كسر الهيكل (BOS) الحقيقي
-        structure_status = f"🔄 {sweep_desc}"
+        # 3. التحقق من كسر الهيكل (BOS) الحقيقي
+        structure_status = "🔄 بانتظار تشكل كسر هيكل حقيقي (BOS)"
         broken_level = 0.0
 
         if h_highs_5m:
@@ -167,46 +124,41 @@ class AdvancedSMCBlueprintEngine:
                 structure_status = f"✅ True BOS Bearish تحت: `{last_swing_low:.2f}`"
                 broken_level = last_swing_low
 
-        return structure_status, broken_level, erl_high, erl_low, irl_high, irl_low, htf_bias, ltf_bias, cdc_val, kz_desc, arl_high, arl_low
+        return structure_status, broken_level, erl_high, erl_low, irl_high, irl_low, htf_bias, ltf_bias, arl_high, arl_low
 
     def execute_strategy(self):
         res_struct = self.analyze_market_structure()
-        structure_status, broken_level, erl_high, erl_low, irl_high, irl_low, htf_bias, ltf_bias, cdc_val, kz_desc, arl_high, arl_low = res_struct
+        structure_status, broken_level, erl_high, erl_low, irl_high, irl_low, htf_bias, ltf_bias, arl_high, arl_low = res_struct
         
         current_price = float(self.df_5m['Close'].iloc[-1])
-        equilibrium = (erl_high + erl_low) / 2
-        
-        # مناطق التسعير المؤسسية (Premium / Discount)
-        zone = "Discount (منطقة خصم - مسموح الشراء 🟢)" if current_price < equilibrium else "Premium (منطقة تضخم - مسموح البيع 🔴)"
         
         trade_type = "غير محدد"
-        signal = f"⏳ بانتظار توافق الـ Killzone والـ CDC... ({kz_desc})"
+        signal = "⏳ مراقبة الهيكل والسيولة..."
         tp1, tp2, sl = 0, 0, 0
 
-        # شروط صفقة شراء متكاملة (منطقة خصم + اتجاه صاعد + سيولة آسيا أو CDC إيجابي)
-        if "صاعد" in htf_bias and current_price < equilibrium and (cdc_val > 0 or "BOS Bullish" in structure_status):
+        # شروط صفقات الشراء الصافية بناءً على الهيكل وكسر الـ BOS
+        if "صاعد" in htf_bias and "True BOS Bullish" in structure_status:
             trade_type = "🟢 صفقة شراء مؤسسية (STRONG BUY)"
-            signal = f"إشارة شراء قناصة مؤكدة وفق خريطة الطريق! ({kz_desc})"
+            signal = "إشارة شراء مؤكدة وفق هيكل الس السوق والـ BOS الحقيقي."
             tp1 = irl_high if irl_high > current_price else current_price + 3.0
             tp2 = erl_high if erl_high > tp1 else tp1 + 5.0
             sl = (broken_level - 1.5) if (broken_level > 0 and broken_level < current_price) else current_price - 4.0
 
-        # شروط صفقة بيع متكاملة (منطقة تضخم + اتجاه هابط + سيولة آسيا أو CDC سلبي)
-        elif "هابط" in htf_bias and current_price >= equilibrium and (cdc_val < 0 or "BOS Bearish" in structure_status):
+        # شروط صفقات البيع الصافية بناءً على الهيكل وكسر الـ BOS
+        elif "هابط" in htf_bias and "True BOS Bearish" in structure_status:
             trade_type = "🔴 صفقة بيع مؤسسية (STRONG SELL)"
-            signal = f"إشارة بيع قناصة مؤكدة وفق خريطة الطريق! ({kz_desc})"
+            signal = "إشارة بيع مؤكدة وفق هيكل السوق والـ BOS الحقيقي."
             tp1 = irl_low if irl_low < current_price else current_price - 3.0
             tp2 = erl_low if erl_low < tp1 else tp1 - 5.0
             sl = (broken_level + 1.5) if (broken_level > 0 and broken_level > current_price) else current_price + 4.0
 
         else:
-            signal = f"👁️ وضع المراقبة الدقيقة: السعر في نطاق {zone.split('-')[0].strip()} | {kz_desc}"
+            signal = "👁️ وضع الانتظار والمراقبة لتأكيد الإغلاق الصحيح."
 
         return {
             "price": current_price,
             "htf_bias": htf_bias,
             "ltf_bias": ltf_bias,
-            "zone": zone,
             "structure": structure_status,
             "trade_type": trade_type,
             "signal": signal,
@@ -218,8 +170,7 @@ class AdvancedSMCBlueprintEngine:
             "erl_high": erl_high,
             "erl_low": erl_low,
             "arl_high": arl_high,
-            "arl_low": arl_low,
-            "kz_desc": kz_desc
+            "arl_low": arl_low
         }
 
 def send_telegram_message(message):
@@ -254,7 +205,7 @@ def fetch_data():
             df['High'] = df['High'] + PRICE_OFFSET
 
         current_price = float(df_5m['Close'].iloc[-1])
-        prev_price = float(df_5m['Close'].iloc[-2])
+        prev_price = float(df_5m['Close'].iloc[-2]) if len(df_5m) > 1 else current_price
         change_pct = ((current_price - prev_price) / prev_price) * 100
         
         return df_1h, df_5m, change_pct, None
@@ -265,7 +216,7 @@ def generate_report():
     df_1h, df_5m, change_pct, error = fetch_data()
     if error: return f"⚠️ خطأ جلب البيانات: {error}"
 
-    engine = AdvancedSMCBlueprintEngine(df_1h, df_5m)
+    engine = CleanSMCBlueprintEngine(df_1h, df_5m)
     res = engine.execute_strategy()
     
     targets_block = ""
@@ -273,21 +224,19 @@ def generate_report():
         targets_block = f"""
 🎯 *مستويات إدارة المخاطر والتنفيذ:*
 • 🛑 وقف الخسارة (SL): `{res['sl']:.2f}` USD
-• 🎯 الهدف الأول (TP1 - IRL/Asia): `{res['tp1']:.2f}` USD
+• 🎯 الهدف الأول (TP1 - IRL): `{res['tp1']:.2f}` USD
 • 🚀 الهدف الثاني (TP2 - ERL): `{res['tp2']:.2f}` USD"""
 
     report = f"""
-🧠 *تقرير الهيكل المؤسسي الشامل (SMC Blueprint)* 🧠
-⏱ *الوقت (توقيت بغداد):* {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
-🕒 *حالة الجلسة:* {res['kz_desc']}
+🧠 *تقرير الهيكل المؤسسي (SMC Blueprint)* 🧠
+⏱ *الوقت (بغداد):* {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
 
 *📍 السعر اللحظي:* `{res['price']:.2f}` USD ({change_pct:+.2f}%)
 *📈 اتجاه الإطار العالي (1H):* {res['htf_bias']}
-*🗺 منطقة التسعير:* {res['zone']}
 *📊 مستويات السيولة ونطاق آسيا (ARL):*
   - نطاق آسيا (ARL): [`{res['arl_low']:.2f}` - `{res['arl_high']:.2f}`]
   - سيولة خارجية (ERL): [`{res['erl_low']:.2f}` - `{res['erl_high']:.2f}`]
-*🔍 حالة الهيكل والاكتساح (BOS/CDC):* {res['structure']}
+*🔍 حالة الهيكل وكتلة الـ BOS:* {res['structure']}
 {targets_block}
 
 *🚀 التوجيه الاستراتيجي:*
@@ -298,7 +247,7 @@ def generate_report():
 
 def monitoring_loop():
     time.sleep(5)
-    send_telegram_message(f"🚀 *تم تفعيل جميع خوارزميات الـ Killzones، نطاق آسيا (ARL)، ورصد الـ CDC بنجاح!* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
+    send_telegram_message(f"🚀 *تم تعديل الكود وإلغاء منطقة التسعير وضبط سيولة آسيا والسعر اللحظي بنجاح!* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
     
     last_signal = None
     last_report_time = 0
@@ -306,22 +255,20 @@ def monitoring_loop():
     while True:
         try:
             current_time = time.time()
-            # تقرير دوري كل 15 دقيقة
             if current_time - last_report_time >= 900:
                 report = generate_report()
                 send_telegram_message(report)
                 last_report_time = current_time
 
-            # فحص فوري للتنبيهات الصارمة
             df_1h, df_5m, change_pct, error = fetch_data()
             if not error:
-                engine = AdvancedSMCBlueprintEngine(df_1h, df_5m)
+                engine = CleanSMCBlueprintEngine(df_1h, df_5m)
                 res = engine.execute_strategy()
                 
                 is_strong = "STRONG BUY" in res['trade_type'] or "STRONG SELL" in res['trade_type']
                 if is_strong and res['trade_type'] != last_signal:
                     instant_alert = f"""
-🚨 *تنبيه دخول قناص فوري (Blueprint Execution)* 🚨
+🚨 *تنبيه دخول قناص فوري* 🚨
 ⏱ *الوقت (بغداد):* {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
 
 📌 *نوع الصفقة:* {res['trade_type']}
@@ -341,7 +288,7 @@ def monitoring_loop():
 
 @app.route("/")
 def home():
-    return "Full SMC Blueprint Bot with Killzones & ARL is Running!"
+    return "Clean SMC Blueprint Bot is Running!"
 
 if __name__ == "__main__":
     t = threading.Thread(target=monitoring_loop, daemon=True)
