@@ -13,6 +13,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 SYMBOL = "GC=F"
 
+# معامل التصحيح الدقيق للسعر والقمة والقاع
 PRICE_OFFSET = -27.5  
 
 class SMCTradingEngine:
@@ -165,10 +166,8 @@ def get_gold_data_safely():
         if len(data) < 5:
             return None, None, None, "⚠️ البيانات غير كافية."
 
-        # تطبيق التصحيح العام مع تصحيح ذكي للقمة لضبطها تماماً مع التارت
         data['Close'] = data['Close'] + PRICE_OFFSET
         data['Low'] = data['Low'] + PRICE_OFFSET
-        # تعديل طفيف لقمة العقود الآجلة لتطابق السعر الفعلي بدقة تامة
         data['High'] = (data['High'] + PRICE_OFFSET) - 3.0  
 
         current_price = float(data['Close'].iloc[-1])
@@ -189,7 +188,7 @@ def analyze_market_and_generate_report():
     analysis = engine.generate_smart_signal()
     
     report_text = f"""
-🤖 *التقرير الذكي لمنظومة الـ SMC / ICT* 🤖
+🤖 *التقرير الشامل لمنظومة الـ SMC / ICT* 🤖
 ⏱ *الوقت:* {time.strftime('%Y-%m-%d %H:%M')} (UTC)
 
 *📍 السعر الحالي (المصحح):* `{analysis['price']:.2f}` USD ({change_pct:+.2f}%)
@@ -205,25 +204,62 @@ def analyze_market_and_generate_report():
 """
     return report_text
 
-def hourly_scheduler():
+def smart_monitoring_loop():
+    """حلقة مراقبة ذكية: تفحص السوق كل 5 دقائق وترسل تنبيهات فورية عند حدوث فرص حقيقية"""
     time.sleep(5)
-    print("🤖 جاري إرسال رسالة التحديث للتليجرام...")
-    startup_msg = "🚀 *مرحباً محمد! تم ضبط وتصحيح قمة الذهب بدقة تامة* لتتطابق مع شاشتك تماماً."
+    print("🤖 جاري تشغيل نظام التنبيهات الفورية والتقارير الساعية...")
+    startup_msg = "🚀 *مرحباً محمد! تم تفعيل نظام التنبيهات الفورية (Instant Alerts)* والمراقبة المستمرة بنجاح."
     send_telegram_message(startup_msg)
+    
+    last_signal_state = None
+    last_hourly_report_time = 0
 
     while True:
-        report = analyze_market_and_generate_report()
-        send_telegram_message(report)
-        time.sleep(3600)
+        try:
+            data, current_price, change_pct, error = get_gold_data_safely()
+            if not error and current_price is not None:
+                engine = SMCTradingEngine(data)
+                analysis = engine.generate_smart_signal()
+                current_signal = analysis['signal']
+                
+                # التحقق إذا كانت هناك إشارة قوية تستوجب تنبيهاً فورياً
+                is_strong_signal = "STRONG BUY" in current_signal or "STRONG SELL" in current_signal or "Liquidity Grab" in current_signal
+                
+                if is_strong_signal and current_signal != last_signal_state:
+                    instant_msg = f"""
+🚨 *تنبيه فوري عالي الأهمية (Instant Alert)* 🚨
+⏱ *الوقت:* {time.strftime('%Y-%m-%d %H:%M')} (UTC)
+
+*📍 السعر الحالي:* `{analysis['price']:.2f}` USD
+*🗺 النطاق الاستراتيجي:* {analysis['zone']}
+*⚡ التوجيه التداولي الفوري:* 
+{current_signal}
+-----------------------------------
+"""
+                    send_telegram_message(instant_msg)
+                    last_signal_state = current_signal
+
+                # إرسال التقرير الشامل كل ساعة بشكل منتظم
+                current_time = time.time()
+                if current_time - last_hourly_report_time >= 3600:
+                    report = analyze_market_and_generate_report()
+                    send_telegram_message(report)
+                    last_hourly_report_time = current_time
+                    
+        except Exception as e:
+            print(f"❌ خطأ في حلقة المراقبة الفورية: {e}")
+            
+        # فحص السوق كل 5 دقائق لاكتشاف أي فرصة فور حدوثها
+        time.sleep(300)
 
 @app.route("/")
 def home():
-    return "Institutional SMC Trading Bot with Perfect High/Low Calibration is Active!"
+    return "Institutional SMC Trading Bot with Instant Alerts & Perfect Calibration is Active!"
 
 if __name__ == "__main__":
-    reporter_thread = threading.Thread(target=hourly_scheduler, daemon=True)
-    reporter_thread.start()
-    print("🚀 تم تشغيل نظام التداول الذكي بنجاح مع المعايرة الدقيقة للقمة والقاع.")
+    monitor_thread = threading.Thread(target=smart_monitoring_loop, daemon=True)
+    monitor_thread.start()
+    print("🚀 تم تشغيل بوت التداول الذكي بنجاح مع خاصية التنبيهات الفورية.")
 
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
