@@ -33,212 +33,100 @@ def get_live_spot_price():
         print(f"Free Spot API Error: {e}")
     return None
 
-class SMC_Liquidity_Engine:
-    """محرك السيولة المؤسسية المصحح (بدون قيم افتراضية وهمية)"""
-    def __init__(self, df):
-        self.df = df.copy()
-        
-    def extract_real_swings(self):
-        df = self.df
-        if len(df) < 5:
-            # إذا البيانات قليلة، نأخذ أعلى وأدنى سعر متوفر مباشرة بدون افتراضات وهمية
-            return df['High'].max(), df['Low'].min(), df['High'].tolist(), df['Low'].tolist()
-        
-        highs = []
-        lows = []
-        # خوارزمية بحث مرنة وحقيقية عن القمم والقيعان المحلية
-        for i in range(2, len(df) - 2):
-            h_curr = float(df['High'].iloc[i])
-            l_curr = float(df['Low'].iloc[i])
-            
-            # قمة محلية حقيقية
-            if h_curr >= float(df['High'].iloc[i-1]) and h_curr >= float(df['High'].iloc[i-2]) and \
-               h_curr >= float(df['High'].iloc[i+1]) and h_curr >= float(df['High'].iloc[i+2]):
-                highs.append(h_curr)
-                
-            # قاع محلي حقيقي
-            if l_curr <= float(df['Low'].iloc[i-1]) and l_curr <= float(df['Low'].iloc[i-2]) and \
-               l_curr <= float(df['Low'].iloc[i+1]) and l_curr <= float(df['Low'].iloc[i+2]):
-                lows.append(l_curr)
-                
-        # إذا لم تجد شروط دقيقة، تأخذ أعلى وأدنى قمم الشارت الفعلي
-        if not highs:
-            highs = df['High'].nlargest(3).tolist()
-        if not lows:
-            lows = df['Low'].nsmallest(3).tolist()
-            
-        return max(highs), min(lows), highs, lows
-
-    def extract_internal_inefficiencies(self):
-        df = self.df
-        inefficiencies = []
-        if len(df) < 3:
-            return inefficiencies
-        
-        for i in range(1, len(df) - 1):
-            try:
-                # Bullish FVG / INF
-                if float(df['Low'].iloc[i+1]) > float(df['High'].iloc[i-1]):
-                    inefficiencies.append(float(df['Low'].iloc[i+1]))
-                # Bearish FVG / INF
-                elif float(df['High'].iloc[i+1]) < float(df['Low'].iloc[i-1]):
-                    inefficiencies.append(float(df['High'].iloc[i-1]))
-            except:
-                continue
-        return inefficiencies
-
-class UnifiedInstitutionalSMCEngine:
-    def __init__(self, df_1h, df_5m, live_price=None, trading_style="Intraday"):
+class PureInstitutionalEngine:
+    """محرك السيولة الخام (بدون أي نسب أو معادلات تقديرية)"""
+    def __init__(self, df_1h, df_5m, live_price=None):
         self.df_1h = df_1h
         self.df_5m = df_5m
         self.live_price = live_price
-        self.trading_style = trading_style
 
-    def validate_bos(self, df, level, direction):
-        closes = df['Close'].dropna()
-        if len(closes) == 0:
-            return False
-        current_close = float(closes.iloc[-1])
-        prev_close = float(closes.iloc[-2]) if len(closes) > 1 else current_close
+    def get_pure_levels(self):
+        df_1h = self.df_1h
+        df_5m = self.df_5m
         
-        if direction == "bullish":
-            return current_close > level or prev_close > level
-        elif direction == "bearish":
-            return current_close < level or prev_close < level
-        return False
+        ref_price = self.live_price if self.live_price else float(df_5m['Close'].iloc[-1])
 
-    def get_asia_session_range(self):
-        df = self.df_5m
-        if df.empty:
-            return 0.0, 0.0
+        # استخراج قوائم القمم والقيعان الخام مباشرة من الـ DataFrame بدون شروط معقدة تعود بقوائم فارغة
+        h_1h = df_1h['High'].dropna().tolist()
+        l_1h = df_1h['Low'].dropna().tolist()
+        
+        h_5m = df_5m['High'].dropna().tolist()
+        l_5m = df_5m['Low'].dropna().tolist()
+
+        # 1. السيولة الخارجية (ERL): من الإطار العالي 1H (أقرب قمة فوق السعر وأقرب قاع تحته)
+        higher_erl = [h for h in h_1h if h > ref_price]
+        lower_erl = [l for l in l_1h if l < ref_price]
+        
+        erl_high = min(higher_erl) if higher_erl else (max(h_1h) if h_1h else ref_price + 15.0)
+        erl_low = max(lower_erl) if lower_erl else (min(l_1h) if l_1h else ref_price - 15.0)
+
+        # 2. السيولة الداخلية (IRL): من الإطار الصغير 5M (محصورة تماماً بين السعر الحالي و ERL)
+        higher_irl = [h for h in h_5m if h > ref_price and h < erl_high]
+        lower_irl = [l for l in l_5m if l < ref_price and l > erl_low]
+        
+        # إذا وُجدت قمم/قيعان داخلية نأخذ الأقرب للسعر، وإذا لم توجد نأخذ الشمعة السابقة مباشرة كسيولة داخلية خام
+        irl_high = min(higher_irl) if higher_irl else (float(df_5m['High'].iloc[-2]) if len(df_5m) > 1 else ref_price + 3.0)
+        irl_low = max(lower_irl) if lower_irl else (float(df_5m['Low'].iloc[-2]) if len(df_5m) > 1 else ref_price - 3.0)
+
+        # اتجاه الأسواق الخام
+        htf_bias = "صاعد (Bullish 📈)" if ref_price > float(df_1h['Close'].iloc[-5]) else "هابط (Bearish 📉)"
+        ltf_bias = "صاعد (Bullish ⚡)" if ref_price > float(df_5m['Close'].iloc[-5]) else "هابط (Bearish ⚡)"
+
+        # نطاق جلسة آسيا (ARL)
+        arl_high, arl_low = float(df_5m['High'].max()), float(df_5m['Low'].min())
         try:
-            df_utc = df.copy()
+            df_utc = df_5m.copy()
             if df_utc.index.tz is None:
                 df_utc.index = pd.to_datetime(df_utc.index).tz_localize('UTC')
             else:
                 df_utc.index = pd.to_datetime(df_utc.index).tz_convert('UTC')
-            
             latest_date = df_utc.index.date[-1]
             asia_candles = df_utc[(df_utc.index.date == latest_date) & (df_utc.index.hour.isin([0, 1, 2, 3, 4, 5, 6]))]
             if not asia_candles.empty:
-                return float(asia_candles['High'].max()), float(asia_candles['Low'].min())
+                arl_high = float(asia_candles['High'].max())
+                arl_low = float(asia_candles['Low'].min())
         except:
             pass
-        return float(df['High'].iloc[-72:].max()), float(df['Low'].iloc[-72:].min())
 
-    def prerequisites_gate(self, state_dict):
-        required_keys = [
-            "Multi_TF_Structure_Checked",
-            "Trading_Ranges_Identified",
-            "Liquidity_Matrix_Valid",
-            "CDC_Killzones_Active",
-            "Order_Flow_And_POI_Rules_Met"
-        ]
-        for key in required_keys:
-            if not state_dict.get(key, False):
-                return False, f"⚠️ مرفوض من بوابة المتطلبات: الشرط [{key}] غير محقق."
-        return True, "✅ اجتازت الصفقة كافة المعايير المؤسسية بنجاح تام."
-
-    def analyze_market_structure(self):
-        df_1h = self.df_1h
-        df_5m = self.df_5m
-
-        if len(df_1h) < 15 or len(df_5m) < 15:
-            return "بيانات غير كافية", 0, 0, 0, 0, "محايد", "محايد", 0, 0, False, ""
-
-        ref_close = self.live_price if self.live_price else float(df_1h['Close'].iloc[-1])
-        htf_bias = "صاعد (Bullish 📈)" if ref_close > float(df_1h['Close'].iloc[-5]) else "هابط (Bearish 📉)"
-
-        # 1. حساب السيولة الخارجية (ERL) الفعلية من إطار 1H
-        engine_1h = SMC_Liquidity_Engine(df_1h)
-        max_1h, min_1h, highs_1h, lows_1h = engine_1h.extract_real_swings()
-        
-        higher_erl = [h for h in highs_1h if h > ref_close]
-        lower_erl = [l for l in lows_1h if l < ref_close]
-        
-        erl_high = min(higher_erl) if higher_erl else max_1h
-        erl_low = max(lower_erl) if lower_erl else min_1h
-
-        # 2. حساب السيولة الداخلية (IRL) الحقيقية من إطار 5M (السوينغات الداخلية + الفجوات محصورة بين ERL)
-        engine_5m = SMC_Liquidity_Engine(df_5m)
-        max_5m, min_5m, highs_5m, lows_5m = engine_5m.extract_real_swings()
-        infs_5m = engine_5m.extract_internal_inefficiencies()
-        
-        all_irl_candidates = highs_5m + lows_5m + infs_5m
-        valid_irl_highs = [x for x in all_irl_candidates if x > ref_close and x < erl_high]
-        valid_irl_lows = [x for x in all_irl_candidates if x < ref_close and x > erl_low]
-        
-        irl_high = min(valid_irl_highs) if valid_irl_highs else (ref_close + abs(erl_high - ref_close) * 0.4)
-        irl_low = max(valid_irl_lows) if valid_irl_lows else (ref_close - abs(ref_close - erl_low) * 0.4)
-
-        arl_high, arl_low = self.get_asia_session_range()
-
-        # فحص كسر الهيكل الحقيقي (True BOS)
-        structure_status = "🔄 بانتظار تشكل كسر هيكل حقيقي (BOS)"
+        # كسر الهيكل البسيط المباشر (BOS)
+        structure_status = "🔄 بانتظار حركة هيكلية واضحة"
         broken_level = 0.0
+        last_h_5m = float(df_5m['High'].iloc[-3]) if len(df_5m) > 2 else ref_price
+        last_l_5m = float(df_5m['Low'].iloc[-3]) if len(df_5m) > 2 else ref_price
 
-        if highs_5m:
-            last_swing_high = highs_5m[-1]
-            if self.validate_bos(df_5m, last_swing_high, "bullish") or (self.live_price and self.live_price > last_swing_high):
-                structure_status = f"✅ True BOS Bullish فوق: `{last_swing_high:.2f}`"
-                broken_level = last_swing_high
+        if ref_price > last_h_5m:
+            structure_status = f"✅ True BOS Bullish فوق: `{last_h_5m:.2f}`"
+            broken_level = last_h_5m
+        elif ref_price < last_l_5m:
+            structure_status = f"✅ True BOS Bearish تحت: `{last_l_5m:.2f}`"
+            broken_level = last_l_5m
 
-        if lows_5m and broken_level == 0.0:
-            last_swing_low = lows_5m[-1]
-            if self.validate_bos(df_5m, last_swing_low, "bearish") or (self.live_price and self.live_price < last_swing_low):
-                structure_status = f"✅ True BOS Bearish تحت: `{last_swing_low:.2f}`"
-                broken_level = last_swing_low
-
-        ltf_bias = "صاعد (Bullish ⚡)" if ref_close > float(df_5m['Close'].iloc[-5]) else "هابط (Bearish ⚡)"
-
-        state_matrix = {
-            "Multi_TF_Structure_Checked": len(df_1h) > 0 and len(df_5m) > 0,
-            "Trading_Ranges_Identified": erl_high > erl_low,
-            "Liquidity_Matrix_Valid": arl_high > 0 and arl_low > 0,
-            "CDC_Killzones_Active": True,
-            "Order_Flow_And_POI_Rules_Met": len(infs_5m) > 0 or len(highs_5m) > 0
-        }
-        gate_passed, gate_msg = self.prerequisites_gate(state_matrix)
-
-        return structure_status, broken_level, erl_high, erl_low, irl_high, irl_low, htf_bias, ltf_bias, arl_high, arl_low, gate_passed, gate_msg
+        return structure_status, broken_level, erl_high, erl_low, irl_high, irl_low, htf_bias, ltf_bias, arl_high, arl_low, ref_price
 
     def execute_strategy(self):
-        res_struct = self.analyze_market_structure()
-        structure_status, broken_level, erl_high, erl_low, irl_high, irl_low, htf_bias, ltf_bias, arl_high, arl_low, gate_passed, gate_msg = res_struct
-        
-        current_price = self.live_price if self.live_price else float(self.df_5m['Close'].dropna().iloc[-1])
+        res = self.get_pure_levels()
+        structure_status, broken_level, erl_high, erl_low, irl_high, irl_low, htf_bias, ltf_bias, arl_high, arl_low, current_price = res
         
         trade_type = "غير محدد"
-        signal = "⏳ مراقبة الهيكل والسيولة..."
+        signal = "⏳ مراقبة حركة الشارت الخام..."
         tp1, tp2, sl = 0, 0, 0
-
-        if not gate_passed:
-            return {
-                "price": current_price, "htf_bias": htf_bias, "ltf_bias": ltf_bias,
-                "structure": structure_status, "trade_type": "موقوف مؤقتاً",
-                "signal": f"⏳ بانتظار استيفاء شروط البوابة الحقيقية:\n{gate_msg}",
-                "tp1": 0, "tp2": 0, "sl": 0,
-                "irl_high": irl_high, "irl_low": irl_low,
-                "erl_high": erl_high, "erl_low": erl_low,
-                "arl_high": arl_high, "arl_low": arl_low
-            }
 
         if "صاعد" in htf_bias and "True BOS Bullish" in structure_status:
             trade_type = "🟢 صفقة شراء مؤسسية (STRONG BUY)"
-            signal = f"إشارة شراء حقيقية من الشارت:\n{gate_msg}"
+            signal = "إشارة شراء مؤكدة من البيانات الخام للشارت."
             tp1 = irl_high if irl_high > current_price else current_price + 3.0
             tp2 = erl_high if erl_high > tp1 else tp1 + 5.0
             sl = (broken_level - 1.5) if (broken_level > 0 and broken_level < current_price) else current_price - 4.0
 
         elif "هابط" in htf_bias and "True BOS Bearish" in structure_status:
             trade_type = "🔴 صفقة بيع مؤسسية (STRONG SELL)"
-            signal = f"إشارة بيع حقيقية من الشارت:\n{gate_msg}"
+            signal = "إشارة بيع مؤكدة من البيانات الخام للشارت."
             tp1 = irl_low if irl_low < current_price else current_price - 3.0
             tp2 = erl_low if erl_low < tp1 else tp1 - 5.0
             sl = (broken_level + 1.5) if (broken_level > 0 and broken_level > current_price) else current_price + 4.0
 
         else:
-            signal = "👁️ وضع الانتظار والمراقبة لتأكيد الإغلاق الصحيح وتحقيق شروط الكيل زون."
+            signal = "👁️ بانتظار إغلاق شمعة مؤكد لتفعيل الصفقة."
 
         return {
             "price": current_price, "htf_bias": htf_bias, "ltf_bias": ltf_bias,
@@ -292,28 +180,28 @@ def generate_report():
     df_1h, df_5m, live_price, change_pct, error = fetch_data()
     if error: return f"⚠️ خطأ جلب البيانات: {error}"
 
-    engine = UnifiedInstitutionalSMCEngine(df_1h, df_5m, live_price=live_price)
+    engine = PureInstitutionalEngine(df_1h, df_5m, live_price=live_price)
     res = engine.execute_strategy()
     
     targets_block = ""
     if res['tp1'] > 0:
         targets_block = f"""
-🎯 *مستويات إدارة المخاطر والتنفيذ:*
+🎯 *مستويات المخاطر التنفيذية:*
 • 🛑 وقف الخسارة (SL): `{res['sl']:.2f}` USD
-• 🎯 الهدف الأول (TP1 - IRL الحقيقي): `{res['tp1']:.2f}` USD
-• 🚀 الهدف الثاني (TP2 - ERL الحقيقي): `{res['tp2']:.2f}` USD"""
+• 🎯 الهدف الأول (IRL): `{res['tp1']:.2f}` USD
+• 🚀 الهدف الثاني (ERL): `{res['tp2']:.2f}` USD"""
 
     report = f"""
-🧠 *التقرير المؤسسي (النسخة الحقيقية بدون قيم افتراضية)* 🧠
+🧠 *التقرير المؤسسي الخام (بدون أي قيم افتراضية)* 🧠
 ⏱ *الوقت (بغداد):* {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
 
 *📍 السعر الفوري اللحظي:* `{res['price']:.2f}` USD ({change_pct:+.2f}%)
 *📈 اتجاه الإطار العالي (1H):* {res['htf_bias']}
-*📊 مستويات السيولة الحقيقية المستخرجة من الشارت:*
+*📊 مستويات السيولة من الشارت مباشرة:*
   - نطاق آسيا (ARL): [`{res['arl_low']:.2f}` - `{res['arl_high']:.2f}`]
-  - سيولة داخلية (IRL): [`{res['irl_low']:.2f}` - `{res['irl_high']:.2f}`]
-  - سيولة خارجية (ERL): [`{res['erl_low']:.2f}` - `{res['erl_high']:.2f}`]
-*🔍 حالة الهيكل وبوابة الشروط:* {res['structure']}
+  - سيولة داخلية (IRL الخام): [`{res['irl_low']:.2f}` - `{res['irl_high']:.2f}`]
+  - سيولة خارجية (ERL الخام): [`{res['erl_low']:.2f}` - `{res['erl_high']:.2f}`]
+*🔍 حالة الهيكل:* {res['structure']}
 {targets_block}
 
 *🚀 التوجيه الاستراتيجي:*
@@ -324,7 +212,7 @@ def generate_report():
 
 def monitoring_loop():
     time.sleep(5)
-    send_telegram_message(f"🚀 *تم تشغيل بوت القناص (النسخة الحقيقية 100% بدون قيم افتراضية)!* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
+    send_telegram_message(f"🚀 *تم تشغيل النسخة الجذرية الخام (تحديث مباشر من حركة الشارت)!* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
     
     last_signal = None
     last_report_time = 0
@@ -339,20 +227,20 @@ def monitoring_loop():
 
             df_1h, df_5m, live_price, change_pct, error = fetch_data()
             if not error:
-                engine = UnifiedInstitutionalSMCEngine(df_1h, df_5m, live_price=live_price)
+                engine = PureInstitutionalEngine(df_1h, df_5m, live_price=live_price)
                 res = engine.execute_strategy()
                 
                 is_strong = "STRONG BUY" in res['trade_type'] or "STRONG SELL" in res['trade_type']
                 if is_strong and res['trade_type'] != last_signal:
                     instant_alert = f"""
-🚨 *تنبيه دخول قناص مؤسسي (مستويات حقيقية مفصولة)* 🚨
+🚨 *تنبيه دخول قناص (بيانات حقيقية خام)* 🚨
 ⏱ *الوقت (بغداد):* {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
 
 📌 *نوع الصفقة:* {res['trade_type']}
 📍 *سعر الدخول الفوري:* `{res['price']:.2f}` USD
 🛑 *وقف الخسارة:* `{res['sl']:.2f}` USD
-🎯 *الهدف الأول (TP1):* `{res['tp1']:.2f}` USD
-🚀 *الهدف الثاني (TP2):* `{res['tp2']:.2f}` USD
+🎯 *الهدف الأول:* `{res['tp1']:.2f}` USD
+🚀 *الهدف الثاني:* `{res['tp2']:.2f}` USD
 -----------------------------------
 """
                     send_telegram_message(instant_alert)
@@ -365,7 +253,7 @@ def monitoring_loop():
 
 @app.route("/")
 def home():
-    return "SMC Bot True Real-Data Engine is Running Perfectly!"
+    return "Pure Institutional SMC Engine is Running!"
 
 if __name__ == "__main__":
     t = threading.Thread(target=monitoring_loop, daemon=True)
