@@ -12,7 +12,6 @@ app = Flask(__name__)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-GOLD_API_URL = os.getenv("GOLD_API_URL", "https://alqanaas.com/api/gold")
 SYMBOL = "GC=F"
 
 def get_baghdad_time():
@@ -20,24 +19,19 @@ def get_baghdad_time():
     return datetime.now(baghdad_tz)
 
 def get_live_spot_price():
-    """جلب السعر الفوري اللحظي مع طباعة التشخيص لمراقبة الـ API"""
-    print(f"Connecting to API URL: {GOLD_API_URL}")
+    """جلب السعر الفوري اللحظي مجاناً وبدون مفتاح API"""
+    url = "https://api.goldprice.dev/v1/prices?symbol=XAU-USD-SPOT"
     try:
-        response = requests.get(GOLD_API_URL, timeout=10)
-        print(f"API Status Code: {response.status_code}")
+        response = requests.get(url, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            print(f"API Data Received: {str(data)[:150]}") # طباعة جزء من الرد للتأكد
-            
-            live_data = data.get("liveXauusd", data)
-            price = live_data.get("Mid") or live_data.get("price") or live_data.get("Bid")
-            if price:
-                print(f"Successfully extracted live spot price: {float(price)}")
-                return float(price)
-        else:
-            print(f"API Error Response: {response.text}")
+            symbols = data.get("symbols", [])
+            if symbols:
+                price = symbols[0].get("price")
+                if price:
+                    return float(price)
     except Exception as e:
-        print(f"Live API Exception Error: {e}")
+        print(f"Free Spot API Error: {e}")
     return None
 
 class ExactSMCBlueprintEngine:
@@ -220,10 +214,9 @@ def fetch_data():
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
 
-        # جلب السعر الفوري المباشر الحقيقي مع التحقق
+        # جلب السعر الفوري المجاني المباشر
         live_price = get_live_spot_price()
         if not live_price:
-            print("WARNING: Live API failed, falling back to yfinance close price!")
             closes = df_5m['Close'].dropna()
             live_price = float(closes.iloc[-1]) if not closes.empty else 0.0
 
@@ -270,7 +263,7 @@ def generate_report():
 
 def monitoring_loop():
     time.sleep(5)
-    send_telegram_message(f"🚀 *تم تشغيل البوت بنجاح مع تتبع السعر اللحظي!* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
+    send_telegram_message(f"🚀 *تم تشغيل البوت بنجاح مع السعر اللحظي المجاني!* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
     
     last_signal = None
     last_report_time = 0
@@ -311,10 +304,7 @@ def monitoring_loop():
 
 @app.route("/")
 def home():
-    return "Exact SMC Blueprint Bot with Live Spot Price is Running!"
+    return "Exact SMC Blueprint Bot with Free Live Spot Price is Running!"
 
 if __name__ == "__main__":
-    t = threading.Thread(target=monitoring_loop, daemon=True)
-    t.start()
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    t = threading.Thread(target, monitoring_loop, daemon=True) # Wait, target=monitoring_loop
