@@ -1,30 +1,46 @@
 import os
-import time
 import threading
+import time
+from datetime import datetime, timezone, timedelta
 import requests
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from datetime import datetime, timezone, timedelta
 from flask import Flask
 
 app = Flask(__name__)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+GOLD_API_URL = os.getenv("GOLD_API_URL", "https://alqanaas.com/api/gold")
 SYMBOL = "GC=F"
 
 def get_baghdad_time():
     baghdad_tz = timezone(timedelta(hours=3))
     return datetime.now(baghdad_tz)
 
+def get_live_spot_price():
+    """جلب السعر الفوري اللحظي الحقيقي لضمان التطابق التام مع شاشتك"""
+    try:
+        response = requests.get(GOLD_API_URL, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            live_data = data.get("liveXauusd", data)
+            price = live_data.get("Mid") or live_data.get("price")
+            if price:
+                return float(price)
+    except Exception as e:
+        print(f"Live API Error: {e}")
+    return None
+
 class ExactSMCBlueprintEngine:
-    def __init__(self, df_1h, df_5m):
+    def __init__(self, df_1h, df_5m, live_price=None):
         self.df_1h = df_1h
         self.df_5m = df_5m
+        self.live_price = live_price
 
     def get_swings(self, df, window=3):
-        """ رصد السوينغات بدقة تامة """
+        """رصد القمم والقيعان بدقة تامة"""
         highs = []
         lows = []
         if len(df) < (window * 2 + 1):
@@ -47,7 +63,7 @@ class ExactSMCBlueprintEngine:
         return highs, lows
 
     def validate_bos(self, df, level, direction):
-        """ التحقق من كسر الهيكل (BOS) الحقيقي عبر إغلاق جسم الشمعة """
+        """التحقق من كسر الهيكل (BOS) عبر الإغلاق الحقيقي"""
         closes = df['Close'].dropna()
         if len(closes) == 0:
             return False
@@ -64,7 +80,7 @@ class ExactSMCBlueprintEngine:
         return False
 
     def get_asia_session_range(self):
-        """ استخراج نطاق جلسة آسيا (ARL) بدقة لا تقبل الخطأ من بيانات الـ 5 دقائق """
+        """تحديد نطاق جلسة آسيا (ARL) بدقة لآخر يوم تداول"""
         df = self.df_5m
         if df.empty:
             return 0.0, 0.0
@@ -76,13 +92,9 @@ class ExactSMCBlueprintEngine:
             else:
                 df_utc.index = pd.to_datetime(df_utc.index).tz_convert('UTC')
             
-            # تحديد آخر يوم تداول متوفر في البيانات
             latest_date = df_utc.index.date[-1]
-            
-            # تصفية ساعات جلسة آسيا بدقة (من 00:00 إلى 06:00 بتوقيت UTC)
             asia_candles = df_utc[(df_utc.index.date == latest_date) & (df_utc.index.hour.isin([0, 1, 2, 3, 4, 5, 6]))]
             
-            # إذا لم توجد شموع لليوم الأخير (مثلاً عطلة نهاية الأسبوع أو الصباح الباكر)، نأخذ اليوم الذي قبله
             if asia_candles.empty:
                 unique_dates = sorted(list(set(df_utc.index.date)))
                 if len(unique_dates) > 1:
@@ -94,7 +106,6 @@ class ExactSMCBlueprintEngine:
         except Exception as e:
             print(f"Asia range error: {e}")
         
-        # كاحتياط أخير دقيق
         return float(df['High'].iloc[-72:].max()), float(df['Low'].iloc[-72:].min())
 
     def analyze_market_structure(self):
@@ -104,32 +115,31 @@ class ExactSMCBlueprintEngine:
         if len(df_1h) < 10 or len(df_5m) < 10:
             return "بيانات غير كافية", 0, 0, 0, 0, "محايد", "محايد", 0, 0
 
-        # 1. تحليل الإطار العالي (1H)
         h_highs_1h, h_lows_1h = self.get_swings(df_1h, window=3)
         erl_high = h_highs_1h[-1]['price'] if h_highs_1h else float(df_1h['High'].max())
         erl_low = h_lows_1h[-1]['price'] if h_lows_1h else float(df_1h['Low'].min())
-        htf_bias = "صاعد (Bullish 📈)" if df_1h['Close'].iloc[-1] > df_1h['Close'].iloc[-5] else "هابط (Bearish 📉)"
+        
+        ref_close = self.live_price if self.live_price else float(df_1h['Close'].iloc[-1])
+        htf_bias = "صاعد (Bullish 📈)" if ref_close > float(df_1h['Close'].iloc[-5]) else "هابط (Bearish 📉)"
 
-        # 2. نطاق جلسة آسيا والسيولة الداخلية
         arl_high, arl_low = self.get_asia_session_range()
         h_highs_5m, h_lows_5m = self.get_swings(df_5m, window=2)
         irl_high = max(arl_high, h_highs_5m[-1]['price'] if h_highs_5m else float(df_5m['High'].iloc[-5:].max()))
         irl_low = min(arl_low, h_lows_5m[-1]['price'] if h_lows_5m else float(df_5m['Low'].iloc[-5:].min()))
-        ltf_bias = "صاعد (Bullish ⚡)" if df_5m['Close'].iloc[-1] > df_5m['Close'].iloc[-6] else "هابط (Bearish ⚡)"
+        ltf_bias = "صاعد (Bullish ⚡)" if ref_close > float(df_5m['Close'].iloc[-6]) else "هابط (Bearish ⚡)"
 
-        # 3. التحقق من كسر الهيكل (BOS) الحقيقي
         structure_status = "🔄 بانتظار تشكل كسر هيكل حقيقي (BOS)"
         broken_level = 0.0
 
         if h_highs_5m:
             last_swing_high = h_highs_5m[-1]['price']
-            if self.validate_bos(df_5m, last_swing_high, "bullish"):
+            if self.validate_bos(df_5m, last_swing_high, "bullish") or (self.live_price and self.live_price > last_swing_high):
                 structure_status = f"✅ True BOS Bullish فوق: `{last_swing_high:.2f}`"
                 broken_level = last_swing_high
 
         if h_lows_5m and broken_level == 0.0:
             last_swing_low = h_lows_5m[-1]['price']
-            if self.validate_bos(df_5m, last_swing_low, "bearish"):
+            if self.validate_bos(df_5m, last_swing_low, "bearish") or (self.live_price and self.live_price < last_swing_low):
                 structure_status = f"✅ True BOS Bearish تحت: `{last_swing_low:.2f}`"
                 broken_level = last_swing_low
 
@@ -139,8 +149,7 @@ class ExactSMCBlueprintEngine:
         res_struct = self.analyze_market_structure()
         structure_status, broken_level, erl_high, erl_low, irl_high, irl_low, htf_bias, ltf_bias, arl_high, arl_low = res_struct
         
-        current_closes = self.df_5m['Close'].dropna()
-        current_price = float(current_closes.iloc[-1]) if not current_closes.empty else 0.0
+        current_price = self.live_price if self.live_price else float(self.df_5m['Close'].dropna().iloc[-1])
         
         trade_type = "غير محدد"
         signal = "⏳ مراقبة الهيكل والسيولة..."
@@ -197,34 +206,34 @@ def fetch_data():
         session = requests.Session()
         session.headers.update({"User-Agent": "Mozilla/5.0"})
         
-        # تم تعديل فترة الـ 5 دقائق إلى 5 أيام لضمان توفر جلسة آسيا كاملة دائماً
         df_1h = yf.download(SYMBOL, period="5d", interval="1h", progress=False, session=session)
         df_5m = yf.download(SYMBOL, period="5d", interval="5m", progress=False, session=session)
         
         if df_1h.empty or df_5m.empty:
-            return None, None, 0, "فشل جلب البيانات"
+            return None, None, 0, 0, "فشل جلب البيانات"
 
         for df in [df_1h, df_5m]:
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
 
-        closes = df_5m['Close'].dropna()
-        if closes.empty:
-            return None, None, 0, "بيانات الإغلاق فارغة"
+        live_price = get_live_spot_price()
+        if not live_price:
+            closes = df_5m['Close'].dropna()
+            live_price = float(closes.iloc[-1]) if not closes.empty else 0.0
 
-        current_price = float(closes.iloc[-1])
-        prev_price = float(closes.iloc[-2]) if len(closes) > 1 else current_price
-        change_pct = ((current_price - prev_price) / prev_price) * 100
+        prev_closes = df_5m['Close'].dropna()
+        prev_price = float(prev_closes.iloc[-2]) if len(prev_closes) > 1 else live_price
+        change_pct = ((live_price - prev_price) / prev_price) * 100 if prev_price > 0 else 0.0
         
-        return df_1h, df_5m, change_pct, None
+        return df_1h, df_5m, live_price, change_pct, None
     except Exception as e:
-        return None, None, 0, str(e)
+        return None, None, 0, 0, str(e)
 
 def generate_report():
-    df_1h, df_5m, change_pct, error = fetch_data()
+    df_1h, df_5m, live_price, change_pct, error = fetch_data()
     if error: return f"⚠️ خطأ جلب البيانات: {error}"
 
-    engine = ExactSMCBlueprintEngine(df_1h, df_5m)
+    engine = ExactSMCBlueprintEngine(df_1h, df_5m, live_price=live_price)
     res = engine.execute_strategy()
     
     targets_block = ""
@@ -239,7 +248,7 @@ def generate_report():
 🧠 *تقرير الهيكل المؤسسي (SMC Blueprint)* 🧠
 ⏱ *الوقت (بغداد):* {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
 
-*📍 السعر اللحظي الدقيق:* `{res['price']:.2f}` USD ({change_pct:+.2f}%)
+*📍 السعر الفوري اللحظي:* `{res['price']:.2f}` USD ({change_pct:+.2f}%)
 *📈 اتجاه الإطار العالي (1H):* {res['htf_bias']}
 *📊 مستويات السيولة ونطاق آسيا (ARL):*
   - نطاق آسيا الفعلي (ARL): [`{res['arl_low']:.2f}` - `{res['arl_high']:.2f}`]
@@ -255,7 +264,7 @@ def generate_report():
 
 def monitoring_loop():
     time.sleep(5)
-    send_telegram_message(f"🚀 *تم تصحيح السعر اللحظي وجلسة آسيا (ARL) بنجاح تام!* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
+    send_telegram_message(f"🚀 *تم تشغيل البوت بنجاح مع السعر اللحظي الفوري المباشر!* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
     
     last_signal = None
     last_report_time = 0
@@ -268,9 +277,9 @@ def monitoring_loop():
                 send_telegram_message(report)
                 last_report_time = current_time
 
-            df_1h, df_5m, change_pct, error = fetch_data()
+            df_1h, df_5m, live_price, change_pct, error = fetch_data()
             if not error:
-                engine = ExactSMCBlueprintEngine(df_1h, df_5m)
+                engine = ExactSMCBlueprintEngine(df_1h, df_5m, live_price=live_price)
                 res = engine.execute_strategy()
                 
                 is_strong = "STRONG BUY" in res['trade_type'] or "STRONG SELL" in res['trade_type']
@@ -280,7 +289,7 @@ def monitoring_loop():
 ⏱ *الوقت (بغداد):* {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
 
 📌 *نوع الصفقة:* {res['trade_type']}
-📍 *سعر الدخول:* `{res['price']:.2f}` USD
+📍 *سعر الدخول الفوري:* `{res['price']:.2f}` USD
 🛑 *وقف الخسارة:* `{res['sl']:.2f}` USD
 🎯 *الهدف الأول (TP1):* `{res['tp1']:.2f}` USD
 🚀 *الهدف الثاني (TP2):* `{res['tp2']:.2f}` USD
@@ -296,7 +305,7 @@ def monitoring_loop():
 
 @app.route("/")
 def home():
-    return "Exact SMC Blueprint Bot is Running Perfectly!"
+    return "Exact SMC Blueprint Bot with Live Spot Price is Running!"
 
 if __name__ == "__main__":
     t = threading.Thread(target=monitoring_loop, daemon=True)
