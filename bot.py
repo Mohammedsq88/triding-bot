@@ -4,6 +4,7 @@ import threading
 import requests
 import pandas as pd
 import numpy as np
+import yfinance as yf
 from flask import Flask
 
 app = Flask(__name__)
@@ -214,8 +215,8 @@ def analyze_market_and_generate_report():
 
 def hourly_scheduler():
     time.sleep(5)
-    print("🤖 جاري إرسال رسالة تفعيل محرك الأوردر بلوك للتليجرام...")
-    startup_msg = "🚀 *مرحباً محمد! تم ترقية البوت بنجاح.* تم تفعيل محرك كشف الأوردر بلوك (Order Blocks) ومناطق السيولة المؤسسية."
+    print("🤖 جاري إرسال رسالة التأكيد للتليجرام...")
+    startup_msg = "🚀 *مرحباً محمد! تم إصلاح الخطأ البرمجي بنجاح.* البوت يعمل الآن بكفاءة كاملة مع محرك الذكاء المؤسسي."
     send_telegram_message(startup_msg)
 
     while True:
@@ -225,12 +226,12 @@ def hourly_scheduler():
 
 @app.route("/")
 def home():
-    return "Institutional SMC Trading Bot with Order Blocks is Active!"
+    return "Institutional SMC Trading Bot is active and fixed!"
 
 if __name__ == "__main__":
     reporter_thread = threading.Thread(target=hourly_scheduler, daemon=True)
     reporter_thread.start()
-    print("🚀 تم تشغيل نظام التداول الذكي بنجاح.")
+    print("🚀 تم تشغيل النظام بنجاح.")
 
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
