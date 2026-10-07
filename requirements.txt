@@ -1,5 +1,2 @@
 flask
-yfinance
-pandas
 requests
-numpy
