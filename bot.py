@@ -112,8 +112,134 @@ def get_htf_bias(df):
         return "BEARISH (هابط 📉)"
     return "NEUTRAL (محايد)"
 
+def detect_fvg(df):
+    if len(df) < 3: return None
+    a, b, c = df.iloc[-3], df.iloc[-2], df.iloc[-1]
+    if c["low"] > a["high"]:
+        return {"type": "BULLISH", "low": a["high"], "high": c["low"]}
+    if c["high"] < a["low"]:
+        return {"type": "BEARISH", "low": c["high"], "high": a["low"]}
+    return None
+
+def has_displacement(df, atr_value):
+    if len(df) < 20 or pd.isna(atr_value): return False
+    candle = df.iloc[-1]
+    body = abs(candle["close"] - candle["open"])
+    return body >= (atr_value * 1.2)
+
 # ============================================================
-# PERIODIC REPORT & MONITORING LOOP
+# ORDER BLOCK DETECTION (OB)
+# ============================================================
+
+def detect_order_block(df, atr_value):
+    if len(df) < 10 or pd.isna(atr_value) or atr_value <= 0:
+        return None
+    i = len(df) - 1
+    curr = df.iloc[i]
+    body = abs(curr["close"] - curr["open"])
+    if body < (atr_value * 1.2):
+        return None
+
+    if curr["close"] > curr["open"]:
+        for j in range(i - 1, max(0, i - 6), -1):
+            c = df.iloc[j]
+            if c["close"] < c["open"]:
+                return {
+                    "type": "BULLISH_OB",
+                    "low": float(c["low"]),
+                    "high": float(c["high"])
+                }
+    elif curr["close"] < curr["open"]:
+        for j in range(i - 1, max(0, i - 6), -1):
+            c = df.iloc[j]
+            if c["close"] > c["open"]:
+                return {
+                    "type": "BEARISH_OB",
+                    "low": float(c["low"]),
+                    "high": float(c["high"])
+                }
+    return None
+
+def detect_sweep(df, highs, lows):
+    if len(df) < 2: return None
+    candle = df.iloc[-1]
+    high, low, close = candle["high"], candle["low"], candle["close"]
+    recent_low = lows[-1]["price"] if lows else None
+    recent_high = highs[-1]["price"] if highs else None
+
+    if recent_low is not None and low < recent_low and close > recent_low:
+        return {"type": "SELL_SIDE", "level": recent_low}
+    if recent_high is not None and high > recent_high and close < recent_high:
+        return {"type": "BUY_SIDE", "level": recent_high}
+    return None
+
+def detect_bos_or_cisd(df, highs, lows, sweep):
+    if sweep is None: return None
+    close = df.iloc[-1]["close"]
+    if sweep["type"] == "SELL_SIDE" and highs:
+        structure_high = highs[-1]["price"]
+        if close > structure_high:
+            return {"direction": "LONG", "level": structure_high}
+    if sweep["type"] == "BUY_SIDE" and lows:
+        structure_low = lows[-1]["price"]
+        if close < structure_low:
+            return {"direction": "SHORT", "level": structure_low}
+    return None
+
+def generate_signal(df5, df1h, htf_bias):
+    if len(df5) < 50: return None
+    highs_5m, lows_5m = confirmed_swings(df5, SWING_W)
+    
+    sweep = detect_sweep(df5, highs_5m, lows_5m)
+    if sweep is None: return None
+    
+    bos = detect_bos_or_cisd(df5, highs_5m, lows_5m, sweep)
+    if bos is None: return None
+
+    atr_series = calculate_atr(df5, ATR_LEN)
+    atr_value = float(atr_series.iloc[-1])
+    if pd.isna(atr_value) or not has_displacement(df5, atr_value):
+        return None
+
+    direction = bos["direction"]
+    if direction == "LONG" and "BULLISH" not in htf_bias: return None
+    if direction == "SHORT" and "BEARISH" not in htf_bias: return None
+
+    entry = float(df5.iloc[-1]["close"])
+    if direction == "LONG":
+        sl = entry - atr_value * ATR_SL_MULT
+        tp1 = entry + atr_value * ATR_TP_MULT
+        tp2 = entry + atr_value * ATR_TP_MULT * 2
+    else:
+        sl = entry + atr_value * ATR_SL_MULT
+        tp1 = entry - atr_value * ATR_TP_MULT
+        tp2 = entry - atr_value * ATR_TP_MULT * 2
+
+    risk = abs(entry - sl)
+    reward = abs(tp2 - entry)
+    rr = (reward / risk) if risk > 0 else 0
+    if rr < RR_MIN: return None
+
+    ob = detect_order_block(df5, atr_value)
+    fvg = detect_fvg(df5)
+
+    return {
+        "direction": direction,
+        "entry": entry,
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "rr": rr,
+        "atr": atr_value,
+        "sweep": sweep["type"],
+        "sweep_level": sweep["level"],
+        "bos": bos["level"],
+        "ob": ob,
+        "fvg": fvg
+    }
+
+# ============================================================
+# PERIODIC REPORT & MONITORING LOOP (24/7)
 # ============================================================
 
 def generate_periodic_report():
@@ -134,21 +260,26 @@ def generate_periodic_report():
         irl_high = highs_5m[-1]["price"] if highs_5m else (price + 4 if price else 0)
         irl_low = lows_5m[-1]["price"] if lows_5m else (price - 4 if price else 0)
         
-        proximity = "🎯 السعر قريب من السيولة الداخلية (IRL)" if price and abs(price - irl_high) < abs(price - erl_high) else "🚀 السعر متجه نحو السيولة الخارجية الكبرى (ERL)"
+        if price:
+            dist_erl = min(abs(price - erl_high), abs(price - erl_low))
+            dist_irl = min(abs(price - irl_high), abs(price - irl_low))
+            proximity = "🎯 السعر قريب من السيولة الداخلية (IRL)" if dist_irl <= dist_erl else "🚀 السعر متجه نحو السيولة الخارجية الكبرى (ERL)"
+        else:
+            proximity = "غير متوفر"
 
         report = f"""
 📊 *التقرير المؤسسي الدوري (XAU/USD)* 📊
 ⏱ *الوقت (بغداد):* {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
 
-*📍 السعر اللحظي:* `{price:.2f}` USD if price else "غير متوفر"
+*📍 السعر الفوري اللحظي:* `{price:.2f}` USD
 
-*📈 اتجاه الأطر الزمنية:*
+*📈 انحياز الأطر الزمنية:*
 • إطار الساعة (1H): {bias_1h}
 • إطار الـ 5 دقائق (5M): {bias_5m}
 
 *💧 مستويات السيولة بالأرقام:*
-• السيولة الخارجية (ERL - 1H): `[{erl_low:.2f} — {erl_high:.2f}]`
-• السيولة الداخلية (IRL - 5M): `[{irl_low:.2f} — {irl_high:.2f}]`
+• السيولة الخارجية (ERL - 1H): `[قاع: {erl_low:.2f} — قمة: {erl_high:.2f}]`
+• السيولة الداخلية (IRL - 5M): `[قاع: {irl_low:.2f} — قمة: {irl_high:.2f}]`
 
 *🔍 حالة القُرب:*
 {proximity}
@@ -160,17 +291,43 @@ def generate_periodic_report():
 
 def monitoring_loop():
     time.sleep(15)
-    send_telegram_message(f"🚀 *تم تشغيل بوت SMC v4 (Twelve Data) مع التقارير الدورية* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
+    send_telegram_message(f"🚀 *تم تشغيل بوت SMC v4 (بدون فلاتر أوقات) جاهز للقنص* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
     
     last_report_time = 0
+    last_signal_time = None
 
     while True:
         try:
             current_time = time.time()
-            # إرسال تقرير دوري كل 15 دقيقة (900 ثانية)
+            # تقرير دوري كل 15 دقيقة (900 ثانية)
             if current_time - last_report_time >= 900:
                 generate_periodic_report()
                 last_report_time = current_time
+
+            df5 = remove_incomplete_candle(get_candles("5min", 200), 5)
+            df1h = remove_incomplete_candle(get_candles("1h", 150), 60)
+            htf_bias = get_htf_bias(df1h)
+            
+            signal = generate_signal(df5, df1h, htf_bias)
+            if signal:
+                sig_key = (signal["direction"], round(signal["entry"], 2))
+                if sig_key != last_signal_time:
+                    ob_info = f"🔹 {signal['ob']['type']} `[{signal['ob']['low']:.2f} - {signal['ob']['high']:.2f}]`" if signal["ob"] else "غير متوفر"
+                    alert_msg = f"""
+🚨 *تنبيه Model #1 (Sweep + CISD + OB)* 🚨
+⏱ *الوقت:* {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
+
+📌 *الاتجاه:* {signal['direction']}
+📍 *الدخول:* `{signal['entry']:.2f}`
+🛑 *وقف الخسارة:* `{signal['sl']:.2f}`
+🎯 *الهدف الأول:* `{signal['tp1']:.2f}`
+🚀 *الهدف الثاني:* `{signal['tp2']:.2f}`
+⚖️ *العائد للمخاطرة:* `1:{signal['rr']:.2f}`
+📦 *الأوردر بلوك:* {ob_info}
+-----------------------------------
+"""
+                    send_telegram_message(alert_msg)
+                    last_signal_time = sig_key
 
         except Exception as e:
             print("Monitoring loop error:", e)
@@ -179,7 +336,7 @@ def monitoring_loop():
 
 @app.route("/")
 def home():
-    return "SMC Engine v4 Twelve Data Service is Running Live!"
+    return "SMC Model #1 Engine Service is Running Live 24/7!"
 
 if __name__ == "__main__":
     t = threading.Thread(target=monitoring_loop, daemon=True)
