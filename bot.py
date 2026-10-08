@@ -1,80 +1,62 @@
 import os
+import threading
 import time
 import requests
 import pandas as pd
 import numpy as np
+from datetime import datetime, timezone, timedelta
+from flask import Flask
 
-# ============================================================
-# SMC ENGINE v4 - XAU/USD SPOT
-# ============================================================
+app = Flask(__name__)
 
-TWELVE_DATA_API_KEY = "7bf250b4b655456c805478936ebed10a"
+TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "7bf250b4b655456c805478936ebed10a")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 SYMBOL = "XAU/USD"
-
 TD_URL = "https://api.twelvedata.com/time_series"
-
-TIMEFRAME = "5min"
-HTF_TIMEFRAME = "1h"
-
-LOOKBACK_5M = 500
-LOOKBACK_1H = 300
 
 SWING_W = 3
 ATR_LEN = 14
-
 ATR_SL_MULT = 1.5
 ATR_TP_MULT = 2.0
-
 RR_MIN = 1.5
 
+def get_baghdad_time():
+    baghdad_tz = timezone(timedelta(hours=3))
+    return datetime.now(baghdad_tz)
+
+def send_telegram_message(message):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("Telegram Token or Chat ID missing.")
+        return False
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        return response.status_code == 200
+    except Exception as e:
+        print("Telegram Error:", e)
+        return False
 
 # ============================================================
-# GET XAU/USD LIVE PRICE
+# TWELVE DATA API FUNCTIONS
 # ============================================================
 
 def get_live_gold():
-
     try:
-
-        params = {
-            "symbol": SYMBOL,
-            "apikey": TWELVE_DATA_API_KEY
-        }
-
-        r = requests.get(
-            "https://api.twelvedata.com/price",
-            params=params,
-            timeout=10
-        )
-
+        params = {"symbol": SYMBOL, "apikey": TWELVE_DATA_API_KEY}
+        r = requests.get("https://api.twelvedata.com/price", params=params, timeout=10)
         r.raise_for_status()
-
         data = r.json()
-
         if "price" not in data:
-
-            raise ValueError(
-                f"خطأ من Twelve Data: {data}"
-            )
-
-        price = float(data["price"])
-
-        return price
-
+            return None
+        return float(data["price"])
     except Exception as e:
-
         print("LIVE PRICE ERROR:", e)
-
         return None
 
-
-# ============================================================
-# GET OHLC DATA
-# ============================================================
-
-def get_candles(interval, outputsize=500):
-
+def get_candles(interval, outputsize=300):
     params = {
         "symbol": SYMBOL,
         "interval": interval,
@@ -82,995 +64,125 @@ def get_candles(interval, outputsize=500):
         "apikey": TWELVE_DATA_API_KEY,
         "format": "JSON"
     }
-
-    r = requests.get(
-        TD_URL,
-        params=params,
-        timeout=20
-    )
-
+    r = requests.get(TD_URL, params=params, timeout=20)
     r.raise_for_status()
-
     data = r.json()
-
-    if "status" in data:
-
-        if data["status"] == "error":
-
-            raise ValueError(
-                data.get(
-                    "message",
-                    "Twelve Data API Error"
-                )
-            )
-
     if "values" not in data:
-
-        raise ValueError(
-            f"لم تصل بيانات الشموع:\n{data}"
-        )
-
-    df = pd.DataFrame(
-        data["values"]
-    )
-
-    df["datetime"] = pd.to_datetime(
-        df["datetime"],
-        utc=True
-    )
-
-    for col in [
-        "open",
-        "high",
-        "low",
-        "close"
-    ]:
-
-        df[col] = pd.to_numeric(
-            df[col],
-            errors="coerce"
-        )
-
-    df = df.dropna(
-        subset=[
-            "open",
-            "high",
-            "low",
-            "close"
-        ]
-    )
-
-    df = df.sort_values(
-        "datetime"
-    )
-
-    df = df.set_index(
-        "datetime"
-    )
-
+        raise ValueError(f"Twelve Data Error: {data}")
+    
+    df = pd.DataFrame(data["values"])
+    df["datetime"] = pd.to_datetime(df["datetime"], utc=True)
+    for col in ["open", "high", "low", "close"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["open", "high", "low", "close"]).sort_values("datetime").set_index("datetime")
     return df
 
-
-# ============================================================
-# REMOVE CURRENT INCOMPLETE CANDLE
-# ============================================================
-
-def remove_incomplete_candle(
-    df,
-    minutes
-):
-
-    if df.empty:
-
-        return df
-
-    now = pd.Timestamp.now(
-        tz="UTC"
-    )
-
+def remove_incomplete_candle(df, minutes):
+    if df.empty: return df
+    now = pd.Timestamp.now(tz="UTC")
     last_time = df.index[-1]
-
-    age = (
-        now - last_time
-    ).total_seconds() / 60
-
-    if age < minutes:
-
+    if (now - last_time).total_seconds() / 60 < minutes:
         df = df.iloc[:-1]
-
     return df
 
+def calculate_atr(df, length=14):
+    high, low, close = df["high"], df["low"], df["close"]
+    prev_close = close.shift(1)
+    tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    return tr.rolling(length).mean()
 
-# ============================================================
-# ATR
-# ============================================================
-
-def calculate_atr(
-    df,
-    length=14
-):
-
-    high = df["high"]
-
-    low = df["low"]
-
-    close = df["close"]
-
-    previous_close = close.shift(1)
-
-    tr1 = high - low
-
-    tr2 = (
-        high - previous_close
-    ).abs()
-
-    tr3 = (
-        low - previous_close
-    ).abs()
-
-    tr = pd.concat(
-        [
-            tr1,
-            tr2,
-            tr3
-        ],
-        axis=1
-    ).max(axis=1)
-
-    return tr.rolling(
-        length
-    ).mean()
-
-
-# ============================================================
-# CONFIRMED SWINGS
-# ============================================================
-
-def confirmed_swings(
-    df,
-    w=3
-):
-
-    highs = []
-
-    lows = []
-
-    h = df["high"].values
-
-    l = df["low"].values
-
-    for i in range(
-        w,
-        len(df) - w
-    ):
-
-        left_high = h[i-w:i]
-
-        right_high = h[
-            i+1:i+w+1
-        ]
-
-        left_low = l[i-w:i]
-
-        right_low = l[
-            i+1:i+w+1
-        ]
-
-        if (
-            h[i] > np.max(left_high)
-            and
-            h[i] > np.max(right_high)
-        ):
-
-            highs.append({
-                "index": i,
-                "time": df.index[i],
-                "price": h[i]
-            })
-
-        if (
-            l[i] < np.min(left_low)
-            and
-            l[i] < np.min(right_low)
-        ):
-
-            lows.append({
-                "index": i,
-                "time": df.index[i],
-                "price": l[i]
-            })
-
+def confirmed_swings(df, w=3):
+    highs, lows = [], []
+    h, l = df["high"].values, df["low"].values
+    for i in range(w, len(df) - w):
+        if h[i] > np.max(h[i-w:i]) and h[i] > np.max(h[i+1:i+w+1]):
+            highs.append({"index": i, "time": df.index[i], "price": h[i]})
+        if l[i] < np.min(l[i-w:i]) and l[i] < np.min(l[i+1:i+w+1]):
+            lows.append({"index": i, "time": df.index[i], "price": l[i]})
     return highs, lows
 
-
-# ============================================================
-# FVG
-# ============================================================
-
-def detect_fvg(df):
-
-    if len(df) < 3:
-
-        return None
-
-    a = df.iloc[-3]
-
-    b = df.iloc[-2]
-
-    c = df.iloc[-1]
-
-    # Bullish FVG
-
-    if c["low"] > a["high"]:
-
-        return {
-            "type": "BULLISH",
-            "low": a["high"],
-            "high": c["low"]
-        }
-
-    # Bearish FVG
-
-    if c["high"] < a["low"]:
-
-        return {
-            "type": "BEARISH",
-            "low": c["high"],
-            "high": a["low"]
-        }
-
-    return None
-
-
-# ============================================================
-# DISPLACEMENT
-# ============================================================
-
-def has_displacement(df):
-
-    if len(df) < 20:
-
-        return False
-
-    atr_value = calculate_atr(
-        df,
-        ATR_LEN
-    ).iloc[-1]
-
-    if pd.isna(atr_value):
-
-        return False
-
-    candle = df.iloc[-1]
-
-    body = abs(
-        candle["close"]
-        -
-        candle["open"]
-    )
-
-    return body >= (
-        atr_value * 1.2
-    )
-
-
-# ============================================================
-# HTF BIAS
-# ============================================================
-
 def get_htf_bias(df):
-
-    if len(df) < 30:
-
-        return "NEUTRAL"
-
-    highs, lows = confirmed_swings(
-        df,
-        SWING_W
-    )
-
-    if (
-        len(highs) < 2
-        or
-        len(lows) < 2
-    ):
-
-        return "NEUTRAL"
-
-    last_high = highs[-1]["price"]
-
-    previous_high = highs[-2]["price"]
-
-    last_low = lows[-1]["price"]
-
-    previous_low = lows[-2]["price"]
-
-    # Higher High + Higher Low
-
-    if (
-        last_high > previous_high
-        and
-        last_low > previous_low
-    ):
-
-        return "BULLISH"
-
-    # Lower High + Lower Low
-
-    if (
-        last_high < previous_high
-        and
-        last_low < previous_low
-    ):
-
-        return "BEARISH"
-
-    return "NEUTRAL"
-
+    if len(df) < 30: return "NEUTRAL"
+    highs, lows = confirmed_swings(df, SWING_W)
+    if len(highs) < 2 or len(lows) < 2: return "NEUTRAL"
+    
+    if highs[-1]["price"] > highs[-2]["price"] and lows[-1]["price"] > lows[-2]["price"]:
+        return "BULLISH (صاعد 📈)"
+    if highs[-1]["price"] < highs[-2]["price"] and lows[-1]["price"] < lows[-2]["price"]:
+        return "BEARISH (هابط 📉)"
+    return "NEUTRAL (محايد)"
 
 # ============================================================
-# LIQUIDITY SWEEP
+# PERIODIC REPORT & MONITORING LOOP
 # ============================================================
 
-def detect_sweep(
-    df,
-    highs,
-    lows
-):
-
-    if len(df) < 2:
-
-        return None
-
-    candle = df.iloc[-1]
-
-    high = candle["high"]
-
-    low = candle["low"]
-
-    close = candle["close"]
-
-    recent_high = None
-
-    recent_low = None
-
-    if highs:
-
-        recent_high = highs[-1]["price"]
-
-    if lows:
-
-        recent_low = lows[-1]["price"]
-
-    # SELL SIDE LIQUIDITY
-    # Sweep low then close back above
-
-    if recent_low is not None:
-
-        if (
-            low < recent_low
-            and
-            close > recent_low
-        ):
-
-            return {
-                "type": "SELL_SIDE",
-                "level": recent_low
-            }
-
-    # BUY SIDE LIQUIDITY
-    # Sweep high then close back below
-
-    if recent_high is not None:
-
-        if (
-            high > recent_high
-            and
-            close < recent_high
-        ):
-
-            return {
-                "type": "BUY_SIDE",
-                "level": recent_high
-            }
-
-    return None
-
-
-# ============================================================
-# BREAK OF STRUCTURE
-# ============================================================
-
-def detect_bos(
-    df,
-    highs,
-    lows,
-    sweep
-):
-
-    if sweep is None:
-
-        return None
-
-    close = df.iloc[-1]["close"]
-
-    # SELL SIDE SWEEP
-    # Expect bullish BOS
-
-    if sweep["type"] == "SELL_SIDE":
-
-        if highs:
-
-            structure_high = highs[-1]["price"]
-
-            if close > structure_high:
-
-                return {
-                    "direction": "LONG",
-                    "level": structure_high
-                }
-
-    # BUY SIDE SWEEP
-    # Expect bearish BOS
-
-    if sweep["type"] == "BUY_SIDE":
-
-        if lows:
-
-            structure_low = lows[-1]["price"]
-
-            if close < structure_low:
-
-                return {
-                    "direction": "SHORT",
-                    "level": structure_low
-                }
-
-    return None
-
-
-# ============================================================
-# GENERATE SIGNAL
-# ============================================================
-
-def generate_signal(
-    df,
-    htf_bias
-):
-
-    if len(df) < 50:
-
-        return None
-
-    highs, lows = confirmed_swings(
-        df,
-        SWING_W
-    )
-
-    sweep = detect_sweep(
-        df,
-        highs,
-        lows
-    )
-
-    if sweep is None:
-
-        return None
-
-    bos = detect_bos(
-        df,
-        highs,
-        lows,
-        sweep
-    )
-
-    if bos is None:
-
-        return None
-
-    if not has_displacement(df):
-
-        return None
-
-    direction = bos["direction"]
-
-    # HTF FILTER
-
-    if (
-        direction == "LONG"
-        and
-        htf_bias != "BULLISH"
-    ):
-
-        return None
-
-    if (
-        direction == "SHORT"
-        and
-        htf_bias != "BEARISH"
-    ):
-
-        return None
-
-    entry = float(
-        df.iloc[-1]["close"]
-    )
-
-    atr_value = float(
-        calculate_atr(
-            df,
-            ATR_LEN
-        ).iloc[-1]
-    )
-
-    if pd.isna(atr_value):
-
-        return None
-
-    # LONG
-
-    if direction == "LONG":
-
-        sl = (
-            entry
-            -
-            atr_value * ATR_SL_MULT
-        )
-
-        tp1 = (
-            entry
-            +
-            atr_value * ATR_TP_MULT
-        )
-
-        tp2 = (
-            entry
-            +
-            atr_value * ATR_TP_MULT * 2
-        )
-
-    # SHORT
-
-    else:
-
-        sl = (
-            entry
-            +
-            atr_value * ATR_SL_MULT
-        )
-
-        tp1 = (
-            entry
-            -
-            atr_value * ATR_TP_MULT
-        )
-
-        tp2 = (
-            entry
-            -
-            atr_value * ATR_TP_MULT * 2
-        )
-
-    risk = abs(
-        entry - sl
-    )
-
-    reward = abs(
-        tp2 - entry
-    )
-
-    rr = (
-        reward / risk
-        if risk > 0
-        else 0
-    )
-
-    if rr < RR_MIN:
-
-        return None
-
-    fvg = detect_fvg(df)
-
-    return {
-
-        "direction": direction,
-
-        "entry": entry,
-
-        "sl": sl,
-
-        "tp1": tp1,
-
-        "tp2": tp2,
-
-        "rr": rr,
-
-        "atr": atr_value,
-
-        "sweep": sweep["type"],
-
-        "sweep_level": sweep["level"],
-
-        "bos": bos["level"],
-
-        "fvg": fvg
-
-    }
-
-
-# ============================================================
-# PRINT LIVE PRICE
-# ============================================================
-
-def print_live_price():
-
-    price = get_live_gold()
-
-    print()
-
-    print(
-        "=" * 60
-    )
-
-    print(
-        "XAU/USD SPOT"
-    )
-
-    print(
-        "=" * 60
-    )
-
-    if price is None:
-
-        print(
-            "❌ فشل الحصول على السعر"
-        )
-
-        return None
-
-    print(
-        f"PRICE : {price:.2f}"
-    )
-
-    print(
-        "SOURCE: Twelve Data"
-    )
-
-    print(
-        "=" * 60
-    )
-
-    return price
-
-
-# ============================================================
-# FULL ANALYSIS
-# ============================================================
-
-def analyze():
-
-    print()
-
-    print(
-        "تحميل بيانات XAU/USD 5M..."
-    )
-
-    df5 = get_candles(
-        TIMEFRAME,
-        LOOKBACK_5M
-    )
-
-    df5 = remove_incomplete_candle(
-        df5,
-        5
-    )
-
-    print(
-        f"5M candles = {len(df5)}"
-    )
-
-    print()
-
-    print(
-        "تحميل بيانات XAU/USD 1H..."
-    )
-
-    df1h = get_candles(
-        HTF_TIMEFRAME,
-        LOOKBACK_1H
-    )
-
-    df1h = remove_incomplete_candle(
-        df1h,
-        60
-    )
-
-    print(
-        f"1H candles = {len(df1h)}"
-    )
-
-    # HTF BIAS
-
-    htf_bias = get_htf_bias(
-        df1h
-    )
-
-    print()
-
-    print(
-        f"HTF BIAS = {htf_bias}"
-    )
-
-    # SIGNAL
-
-    signal = generate_signal(
-        df5,
-        htf_bias
-    )
-
-    if signal is None:
-
-        print()
-
-        print(
-            "لا توجد إشارة SMC كاملة حالياً."
-        )
-
-        return None
-
-    print()
-
-    print(
-        "=" * 60
-    )
-
-    print(
-        "🔥 SMC SIGNAL"
-    )
-
-    print(
-        "=" * 60
-    )
-
-    print(
-        f"Direction : {signal['direction']}"
-    )
-
-    print(
-        f"Entry     : {signal['entry']:.2f}"
-    )
-
-    print(
-        f"SL        : {signal['sl']:.2f}"
-    )
-
-    print(
-        f"TP1       : {signal['tp1']:.2f}"
-    )
-
-    print(
-        f"TP2       : {signal['tp2']:.2f}"
-    )
-
-    print(
-        f"RR        : 1:{signal['rr']:.2f}"
-    )
-
-    print(
-        f"ATR       : {signal['atr']:.2f}"
-    )
-
-    print(
-        f"Sweep     : {signal['sweep']}"
-    )
-
-    print(
-        f"Sweep Lvl : {signal['sweep_level']:.2f}"
-    )
-
-    print(
-        f"BOS       : {signal['bos']:.2f}"
-    )
-
-    if signal["fvg"]:
-
-        print(
-            f"FVG       : {signal['fvg']['type']}"
-        )
-
-        print(
-            f"FVG Low   : {signal['fvg']['low']:.2f}"
-        )
-
-        print(
-            f"FVG High  : {signal['fvg']['high']:.2f}"
-        )
-
-    else:
-
-        print(
-            "FVG       : NONE"
-        )
-
-    print(
-        "=" * 60
-    )
-
-    return signal
-
-
-# ============================================================
-# TEST API
-# ============================================================
-
-def test_api():
-
-    print()
-
-    print(
-        "اختبار Twelve Data..."
-    )
-
-    price = get_live_gold()
-
-    if price is None:
-
-        print(
-            "❌ فشل اختبار السعر اللحظي"
-        )
-
-        return False
-
-    print(
-        f"✅ XAU/USD = {price:.2f}"
-    )
-
+def generate_periodic_report():
     try:
+        price = get_live_gold()
+        df5 = remove_incomplete_candle(get_candles("5min", 200), 5)
+        df1h = remove_incomplete_candle(get_candles("1h", 150), 60)
+        
+        bias_1h = get_htf_bias(df1h)
+        bias_5m = get_htf_bias(df5)
+        
+        highs_1h, lows_1h = confirmed_swings(df1h, SWING_W)
+        highs_5m, lows_5m = confirmed_swings(df5, SWING_W)
+        
+        erl_high = highs_1h[-1]["price"] if highs_1h else (price + 10 if price else 0)
+        erl_low = lows_1h[-1]["price"] if lows_1h else (price - 10 if price else 0)
+        
+        irl_high = highs_5m[-1]["price"] if highs_5m else (price + 4 if price else 0)
+        irl_low = lows_5m[-1]["price"] if lows_5m else (price - 4 if price else 0)
+        
+        proximity = "🎯 السعر قريب من السيولة الداخلية (IRL)" if price and abs(price - irl_high) < abs(price - erl_high) else "🚀 السعر متجه نحو السيولة الخارجية الكبرى (ERL)"
 
-        df = get_candles(
-            "5min",
-            10
-        )
+        report = f"""
+📊 *التقرير المؤسسي الدوري (XAU/USD)* 📊
+⏱ *الوقت (بغداد):* {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
 
-        print(
-            f"✅ تم تحميل {len(df)} شموع 5M"
-        )
+*📍 السعر اللحظي:* `{price:.2f}` USD if price else "غير متوفر"
 
+*📈 اتجاه الأطر الزمنية:*
+• إطار الساعة (1H): {bias_1h}
+• إطار الـ 5 دقائق (5M): {bias_5m}
+
+*💧 مستويات السيولة بالأرقام:*
+• السيولة الخارجية (ERL - 1H): `[{erl_low:.2f} — {erl_high:.2f}]`
+• السيولة الداخلية (IRL - 5M): `[{irl_low:.2f} — {irl_high:.2f}]`
+
+*🔍 حالة القُرب:*
+{proximity}
+-----------------------------------
+"""
+        send_telegram_message(report)
     except Exception as e:
+        print("Periodic Report Error:", e)
 
-        print(
-            "❌ خطأ في بيانات 5M:"
-        )
-
-        print(e)
-
-        return False
-
-    try:
-
-        df = get_candles(
-            "1h",
-            10
-        )
-
-        print(
-            f"✅ تم تحميل {len(df)} شموع 1H"
-        )
-
-    except Exception as e:
-
-        print(
-            "❌ خطأ في بيانات 1H:"
-        )
-
-        print(e)
-
-        return False
-
-    print()
-
-    print(
-        "✅ API يعمل بشكل صحيح."
-    )
-
-    return True
-
-
-# ============================================================
-# RUN ONCE
-# ============================================================
-
-def run_once():
-
-    if not test_api():
-
-        return
-
-    print_live_price()
-
-    try:
-
-        analyze()
-
-    except Exception as e:
-
-        print()
-
-        print(
-            "❌ ANALYSIS ERROR:"
-        )
-
-        print(e)
-
-
-# ============================================================
-# CONTINUOUS LIVE
-# ============================================================
-
-def run_live():
-
-    last_signal = None
+def monitoring_loop():
+    time.sleep(15)
+    send_telegram_message(f"🚀 *تم تشغيل بوت SMC v4 (Twelve Data) مع التقارير الدورية* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
+    
+    last_report_time = 0
 
     while True:
-
         try:
-
-            price = get_live_gold()
-
-            if price is not None:
-
-                print()
-
-                print(
-                    f"XAU/USD LIVE = {price:.2f}"
-                )
-
-            signal = analyze()
-
-            if signal:
-
-                key = (
-                    signal["direction"],
-                    round(
-                        signal["entry"],
-                        2
-                    )
-                )
-
-                if key != last_signal:
-
-                    print()
-
-                    print(
-                        "🚨 NEW SMC SIGNAL"
-                    )
-
-                    last_signal = key
-
-            time.sleep(60)
-
-        except KeyboardInterrupt:
-
-            print(
-                "\nتم إيقاف المحرك."
-            )
-
-            break
+            current_time = time.time()
+            # إرسال تقرير دوري كل 15 دقيقة (900 ثانية)
+            if current_time - last_report_time >= 900:
+                generate_periodic_report()
+                last_report_time = current_time
 
         except Exception as e:
+            print("Monitoring loop error:", e)
 
-            print(
-                "ERROR:",
-                e
-            )
+        time.sleep(60)
 
-            time.sleep(10)
-
-
-# ============================================================
-# MAIN
-# ============================================================
+@app.route("/")
+def home():
+    return "SMC Engine v4 Twelve Data Service is Running Live!"
 
 if __name__ == "__main__":
-
-    run_once()
+    t = threading.Thread(target=monitoring_loop, daemon=True)
+    t.start()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
