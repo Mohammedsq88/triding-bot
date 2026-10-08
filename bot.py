@@ -187,8 +187,9 @@ def detect_bos_or_cisd(df, highs, lows, sweep):
     return None
 
 def generate_signal(df5, df1h, htf_bias):
-    if len(df5) < 50: return None
+    if len(df5) < 50 or len(df1h) < 30: return None
     highs_5m, lows_5m = confirmed_swings(df5, SWING_W)
+    highs_1h, lows_1h = confirmed_swings(df1h, SWING_W)
     
     sweep = detect_sweep(df5, highs_5m, lows_5m)
     if sweep is None: return None
@@ -206,14 +207,22 @@ def generate_signal(df5, df1h, htf_bias):
     if direction == "SHORT" and "BEARISH" not in htf_bias: return None
 
     entry = float(df5.iloc[-1]["close"])
+    
+    # تحديد وقف الخسارة والهدف الأول بناءً على الـ ATR
     if direction == "LONG":
         sl = entry - atr_value * ATR_SL_MULT
         tp1 = entry + atr_value * ATR_TP_MULT
-        tp2 = entry + atr_value * ATR_TP_MULT * 2
+        
+        # ربط الهدف الثاني (TP2) بالسيولة الخارجية الكبرى (ERL Highs) على فريم 1H
+        erl_highs = [h["price"] for h in highs_1h if h["price"] > entry] if highs_1h else []
+        tp2 = min(erl_highs) if erl_highs else (entry + atr_value * ATR_TP_MULT * 2)
     else:
         sl = entry + atr_value * ATR_SL_MULT
         tp1 = entry - atr_value * ATR_TP_MULT
-        tp2 = entry - atr_value * ATR_TP_MULT * 2
+        
+        # ربط الهدف الثاني (TP2) بالسيولة الخارجية الكبرى (ERL Lows) على فريم 1H
+        erl_lows = [l["price"] for l in lows_1h if l["price"] < entry] if lows_1h else []
+        tp2 = max(erl_lows) if erl_lows else (entry - atr_value * ATR_TP_MULT * 2)
 
     risk = abs(entry - sl)
     reward = abs(tp2 - entry)
@@ -291,7 +300,7 @@ def generate_periodic_report():
 
 def monitoring_loop():
     time.sleep(15)
-    send_telegram_message(f"🚀 *تم تشغيل بوت SMC v4 (بدون فلاتر أوقات) جاهز للقنص* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
+    send_telegram_message(f"🚀 *تم تشغيل بوت SMC v4 (الأهداف مرتبطة بالسيولة ERL)* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
     
     last_report_time = 0
     last_signal_time = None
@@ -299,7 +308,6 @@ def monitoring_loop():
     while True:
         try:
             current_time = time.time()
-            # تقرير دوري كل 15 دقيقة (900 ثانية)
             if current_time - last_report_time >= 900:
                 generate_periodic_report()
                 last_report_time = current_time
@@ -314,14 +322,14 @@ def monitoring_loop():
                 if sig_key != last_signal_time:
                     ob_info = f"🔹 {signal['ob']['type']} `[{signal['ob']['low']:.2f} - {signal['ob']['high']:.2f}]`" if signal["ob"] else "غير متوفر"
                     alert_msg = f"""
-🚨 *تنبيه Model #1 (Sweep + CISD + OB)* 🚨
+🚨 *تنبيه Model #1 (أهداف السيولة ERL)* 🚨
 ⏱ *الوقت:* {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
 
 📌 *الاتجاه:* {signal['direction']}
 📍 *الدخول:* `{signal['entry']:.2f}`
 🛑 *وقف الخسارة:* `{signal['sl']:.2f}`
 🎯 *الهدف الأول:* `{signal['tp1']:.2f}`
-🚀 *الهدف الثاني:* `{signal['tp2']:.2f}`
+🚀 *الهدف الثاني (سيولة ERL):* `{signal['tp2']:.2f}`
 ⚖️ *العائد للمخاطرة:* `1:{signal['rr']:.2f}`
 📦 *الأوردر بلوك:* {ob_info}
 -----------------------------------
@@ -336,7 +344,7 @@ def monitoring_loop():
 
 @app.route("/")
 def home():
-    return "SMC Model #1 Engine Service is Running Live 24/7!"
+    return "SMC Liquidity-Targeted Engine is Running Live!"
 
 if __name__ == "__main__":
     t = threading.Thread(target=monitoring_loop, daemon=True)
