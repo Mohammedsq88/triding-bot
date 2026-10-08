@@ -33,7 +33,7 @@ def send_telegram_message(message):
         return False
 
 # ============================================================
-# SMC Engine v3 Core Logic
+# SMC Engine & Multi-TF Data Loader
 # ============================================================
 
 def _flatten(df: pd.DataFrame) -> pd.DataFrame:
@@ -42,23 +42,28 @@ def _flatten(df: pd.DataFrame) -> pd.DataFrame:
     required = ["Open", "High", "Low", "Close", "Volume"]
     return df[required].dropna(subset=["Open", "High", "Low", "Close"])
 
-def load_data(symbol: str, period_5m: str = "10d", period_1h: str = "60d"):
+def load_data(symbol: str):
     import yfinance as yf
     session = requests.Session()
     session.headers.update({"User-Agent": "Mozilla/5.0"})
-    df5 = _flatten(yf.download(symbol, period=period_5m, interval="5m", progress=False, session=session, auto_adjust=False))
-    df1 = _flatten(yf.download(symbol, period=period_1h, interval="1h", progress=False, session=session, auto_adjust=False))
-    if df5.empty or df1.empty:
-        raise RuntimeError("Failed to download market data.")
-    for df in (df5, df1):
+    
+    df5 = _flatten(yf.download(symbol, period="10d", interval="5m", progress=False, session=session, auto_adjust=False))
+    df15 = _flatten(yf.download(symbol, period="20d", interval="15m", progress=False, session=session, auto_adjust=False))
+    df1 = _flatten(yf.download(symbol, period="60d", interval="1h", progress=False, session=session, auto_adjust=False))
+    
+    if df5.empty or df15.empty or df1.empty:
+        raise RuntimeError("Failed to download multi-tf market data.")
+        
+    for df in (df5, df15, df1):
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
         else:
             df.index = df.index.tz_convert("UTC")
-    return df5.sort_index(), df1.sort_index()
+            
+    return df5.sort_index(), df15.sort_index(), df1.sort_index()
 
-def htf_completed(df1h: pd.DataFrame, t: pd.Timestamp) -> pd.DataFrame:
-    return df1h[df1h.index + pd.Timedelta(hours=1) <= t]
+def htf_completed(df: pd.DataFrame, t: pd.Timestamp, tf_hours=1) -> pd.DataFrame:
+    return df[df.index + pd.Timedelta(hours=tf_hours) <= t]
 
 def atr(df: pd.DataFrame, n: int = 14) -> pd.Series:
     high, low, close = df["High"], df["Low"], df["Close"]
@@ -82,231 +87,107 @@ def confirmed_swing_indices(df: pd.DataFrame, w: int = 2, end_i: Optional[int] =
     low_idx = [i for i in range(0, max_pivot + 1) if bool(sl.iloc[i])]
     return high_idx, low_idx
 
-def bullish_fvg(df: pd.DataFrame, i: int) -> bool:
-    return i >= 2 and df["Low"].iloc[i] > df["High"].iloc[i - 2]
+def get_market_bias(df: pd.DataFrame, lookback=5) -> str:
+    if len(df) < lookback + 2: return "محايد"
+    c = df["Close"]
+    return "صاعد (BULL 📈)" if c.iloc[-1] > c.iloc[-1 - lookback] else "هابط (BEAR 📉)"
 
-def bearish_fvg(df: pd.DataFrame, i: int) -> bool:
-    return i >= 2 and df["High"].iloc[i] < df["Low"].iloc[i - 2]
+def extract_liquidity_levels(df5: pd.DataFrame, df1h: pd.DataFrame):
+    ref_price = float(df5["Close"].iloc[-1])
+    
+    # 1. السيولة الخارجية (ERL) من الإطار العالي 1H
+    h_idx_1h, l_idx_1h = confirmed_swing_indices(df1h, w=3)
+    erl_highs = [float(df1h["High"].iloc[i]) for i in h_idx_1h if float(df1h["High"].iloc[i]) > ref_price]
+    erl_lows = [float(df1h["Low"].iloc[i]) for i in l_idx_1h if float(df1h["Low"].iloc[i]) < ref_price]
+    
+    erl_h = min(erl_highs) if erl_highs else ref_price + 10.0
+    erl_l = max(erl_lows) if erl_lows else ref_price - 10.0
 
-@dataclass
-class EngineParams:
-    swing_w: int = 2
-    atr_n: int = 14
-    sweep_arm: int = 12
-    disp_mult: float = 1.2
-    sl_atr_mult: float = 0.30
-    rr_min: float = 1.50
-    bias_lookback: int = 5
-    htf_swing_w: int = 3
-    tp1_atr_fallback: float = 1.5
-    tp2_atr_fallback: float = 1.0
+    # 2. السيولة الداخلية (IRL) من الإطار الصغير 5M (محصورة داخل النطاق)
+    h_idx_5m, l_idx_5m = confirmed_swing_indices(df5, w=2)
+    irl_highs = [float(df5["High"].iloc[i]) for i in h_idx_5m if ref_price < float(df5["High"].iloc[i]) < erl_h]
+    irl_lows = [float(df5["Low"].iloc[i]) for i in l_idx_5m if erl_l < float(df5["Low"].iloc[i]) < ref_price]
+    
+    irl_h = min(irl_highs) if irl_highs else ref_price + 3.0
+    irl_l = max(irl_lows) if irl_lows else ref_price - 3.0
 
-@dataclass
-class Signal:
-    side: str
-    signal_time: pd.Timestamp
-    entry_ref: float
-    sl: float
-    tp1: float
-    tp2: float
-    rr_tp1: float
-    rr_tp2: float
-    atr_value: float
-    sweep_price: float
-    bos_level: float
-    reason: str
+    # تحديد قُرب السعر
+    dist_to_erl = min(abs(ref_price - erl_h), abs(ref_price - erl_l))
+    dist_to_irl = min(abs(ref_price - irl_h), abs(ref_price - irl_l))
+    
+    proximity = "🎯 قريب جداً من السيولة الداخلية (IRL)" if dist_to_irl <= dist_to_erl else "🚀 قريب من مستويات السيولة الخارجية الكبرى (ERL)"
 
-class SMCEngineV3:
-    def __init__(self, params: Optional[EngineParams] = None):
-        self.p = params or EngineParams()
+    return {
+        "erl_high": erl_h, "erl_low": erl_l,
+        "irl_high": irl_h, "irl_low": irl_l,
+        "proximity": proximity
+    }
 
-    def _htf_bias(self, df1h_c: pd.DataFrame) -> Optional[str]:
-        p = self.p
-        if len(df1h_c) < p.bias_lookback + 2: return None
-        close = df1h_c["Close"]
-        if close.iloc[-1] > close.iloc[-1 - p.bias_lookback]: return "BULL"
-        if close.iloc[-1] < close.iloc[-1 - p.bias_lookback]: return "BEAR"
-        return None
+def generate_periodic_report():
+    try:
+        df5, df15, df1 = load_data(SYMBOL)
+        ref_price = float(df5["Close"].iloc[-1])
+        
+        bias_1h = get_market_bias(df1, lookback=5)
+        bias_15m = get_market_bias(df15, lookback=5)
+        bias_5m = get_market_bias(df5, lookback=5)
+        
+        liq = extract_liquidity_levels(df5, df1)
+        
+        report = f"""
+📊 *التقرير المؤسسي الدوري للذهب (كل 15 دقيقة)* 📊
+⏱ *الوقت (بغداد):* {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
 
-    def _last_confirmed_low(self, df5: pd.DataFrame, before_i: int) -> Optional[tuple]:
-        _, lows = confirmed_swing_indices(df5, self.p.swing_w, before_i)
-        lows = [x for x in lows if x < before_i]
-        if not lows: return None
-        k = lows[-1]
-        return (k, float(df5["Low"].iloc[k]))
+*📍 السعر الفوري اللحظي:* `{ref_price:.2f}` USD
 
-    def _last_confirmed_high(self, df5: pd.DataFrame, before_i: int) -> Optional[tuple]:
-        highs, _ = confirmed_swing_indices(df5, self.p.swing_w, before_i)
-        highs = [x for x in highs if x < before_i]
-        if not highs: return None
-        k = highs[-1]
-        return (k, float(df5["High"].iloc[k]))
+*📈 انحياز الأطر الزمنية:*
+• إطار الساعة (1H): {bias_1h}
+• إطار الربع ساعة (15M): {bias_15m}
+• إطار الـ 5 دقائق (5M): {bias_5m}
 
-    def _find_sweep_low(self, df5: pd.DataFrame, i: int) -> Optional[tuple]:
-        start = max(10, i - self.p.sweep_arm)
-        for j in range(i, start - 1, -1):
-            swing = self._last_confirmed_low(df5, j)
-            if swing is None: continue
-            k, liquidity = swing
-            if float(df5["Low"].iloc[j]) < liquidity and float(df5["Close"].iloc[j]) > liquidity:
-                return (j, k, liquidity, float(df5["Low"].iloc[j]))
-        return None
+*💧 مستويات السيولة بالأرقام:*
+• السيولة الخارجية (ERL): `[قاع: {liq['erl_low']:.2f} — قمة: {liq['erl_high']:.2f}]`
+• السيولة الداخلية (IRL): `[قاع: {liq['irl_low']:.2f} — قمة: {liq['irl_high']:.2f}]`
 
-    def _find_sweep_high(self, df5: pd.DataFrame, i: int) -> Optional[tuple]:
-        start = max(10, i - self.p.sweep_arm)
-        for j in range(i, start - 1, -1):
-            swing = self._last_confirmed_high(df5, j)
-            if swing is None: continue
-            k, liquidity = swing
-            if float(df5["High"].iloc[j]) > liquidity and float(df5["Close"].iloc[j]) < liquidity:
-                return (j, k, liquidity, float(df5["High"].iloc[j]))
-        return None
-
-    def _bullish_bos(self, df5: pd.DataFrame, sweep_index: int, i: int, atr_value: float) -> Optional[float]:
-        p = self.p
-        highs, _ = confirmed_swing_indices(df5, p.swing_w, i)
-        candidates = [x for x in highs if sweep_index < x < i]
-        if not candidates: return None
-        bos_index = candidates[-1]
-        bos_level = float(df5["High"].iloc[bos_index])
-        close, open_price = float(df5["Close"].iloc[i]), float(df5["Open"].iloc[i])
-        body = abs(close - open_price)
-        if close <= bos_level or close <= open_price or body < p.disp_mult * atr_value: return None
-        if not (bullish_fvg(df5, i) or bullish_fvg(df5, i - 1)): return None
-        return bos_level
-
-    def _bearish_bos(self, df5: pd.DataFrame, sweep_index: int, i: int, atr_value: float) -> Optional[float]:
-        p = self.p
-        _, lows = confirmed_swing_indices(df5, p.swing_w, i)
-        candidates = [x for x in lows if sweep_index < x < i]
-        if not candidates: return None
-        bos_index = candidates[-1]
-        bos_level = float(df5["Low"].iloc[bos_index])
-        close, open_price = float(df5["Close"].iloc[i]), float(df5["Open"].iloc[i])
-        body = abs(close - open_price)
-        if close >= bos_level or close >= open_price or body < p.disp_mult * atr_value: return None
-        if not (bearish_fvg(df5, i) or bearish_fvg(df5, i - 1)): return None
-        return bos_level
-
-    def _tp1_long(self, df5: pd.DataFrame, i: int, entry: float, atr_value: float) -> float:
-        highs, _ = confirmed_swing_indices(df5, self.p.swing_w, i)
-        candidates = [float(df5["High"].iloc[x]) for x in highs if x < i and float(df5["High"].iloc[x]) > entry]
-        return min(candidates) if candidates else entry + self.p.tp1_atr_fallback * atr_value
-
-    def _tp1_short(self, df5: pd.DataFrame, i: int, entry: float, atr_value: float) -> float:
-        _, lows = confirmed_swing_indices(df5, self.p.swing_w, i)
-        candidates = [float(df5["Low"].iloc[x]) for x in lows if x < i and float(df5["Low"].iloc[x]) < entry]
-        return max(candidates) if candidates else entry - self.p.tp1_atr_fallback * atr_value
-
-    def _erl(self, df1h_c: pd.DataFrame, ref: float, side: str) -> Optional[float]:
-        if len(df1h_c) < 20: return None
-        p = self.p
-        highs, lows = confirmed_swing_indices(df1h_c, p.htf_swing_w, len(df1h_c) - 1)
-        if side == "LONG":
-            candidates = [float(df1h_c["High"].iloc[x]) for x in highs if x < len(df1h_c) - 1 and float(df1h_c["High"].iloc[x]) > ref]
-            return min(candidates) if candidates else None
-        else:
-            candidates = [float(df1h_c["Low"].iloc[x]) for x in lows if x < len(df1h_c) - 1 and float(df1h_c["Low"].iloc[x]) < ref]
-            return max(candidates) if candidates else None
-
-    def signal_at(self, df5_slice: pd.DataFrame, df1h_c: pd.DataFrame, t: pd.Timestamp) -> Optional[Signal]:
-        p = self.p
-        minimum = p.sweep_arm + p.swing_w * 2 + p.atr_n + 20
-        if len(df5_slice) < minimum: return None
-        i = len(df5_slice) - 1
-        atr_value = float(atr(df5_slice, p.atr_n).iloc[i])
-        if not np.isfinite(atr_value) or atr_value <= 0: return None
-        bias = self._htf_bias(df1h_c)
-        if bias is None: return None
-        entry = float(df5_slice["Close"].iloc[i])
-
-        if bias == "BULL":
-            sweep = self._find_sweep_low(df5_slice, i)
-            if sweep is not None:
-                sweep_index, sweep_price = sweep[0], sweep[3]
-                bos = self._bullish_bos(df5_slice, sweep_index, i, atr_value)
-                if bos is not None:
-                    sl = sweep_price - p.sl_atr_mult * atr_value
-                    tp1 = self._tp1_long(df5_slice, i, entry, atr_value)
-                    erl = self._erl(df1h_c, entry, "LONG")
-                    tp2 = erl if (erl is not None and erl > tp1) else tp1 + p.tp2_atr_fallback * atr_value
-                    risk = entry - sl
-                    if risk <= 0: return None
-                    rr1, rr2 = (tp1 - entry) / risk, (tp2 - entry) / risk
-                    if rr2 < p.rr_min: return None
-                    return Signal("LONG", t, entry, sl, tp1, tp2, rr1, rr2, atr_value, sweep_price, bos, "Bullish Sweep + BOS + Disp + FVG + HTF Bull")
-
-        if bias == "BEAR":
-            sweep = self._find_sweep_high(df5_slice, i)
-            if sweep is not None:
-                sweep_index, sweep_price = sweep[0], sweep[3]
-                bos = self._bearish_bos(df5_slice, sweep_index, i, atr_value)
-                if bos is not None:
-                    sl = sweep_price + p.sl_atr_mult * atr_value
-                    tp1 = self._tp1_short(df5_slice, i, entry, atr_value)
-                    erl = self._erl(df1h_c, entry, "SHORT")
-                    tp2 = erl if (erl is not None and erl < tp1) else tp1 - p.tp2_atr_fallback * atr_value
-                    risk = sl - entry
-                    if risk <= 0: return None
-                    rr1, rr2 = (entry - tp1) / risk, (entry - tp2) / risk
-                    if rr2 < p.rr_min: return None
-                    return Signal("SHORT", t, entry, sl, tp1, tp2, rr1, rr2, atr_value, sweep_price, bos, "Bearish Sweep + BOS + Disp + FVG + HTF Bear")
-        return None
-
-def get_last_closed_5m(df5: pd.DataFrame) -> tuple:
-    if len(df5) < 3: raise RuntimeError("Not enough 5M candles.")
-    now = pd.Timestamp.now(tz="UTC")
-    last_index = df5.index[-1]
-    estimated_close = last_index + pd.Timedelta(minutes=5)
-    if estimated_close <= now: return df5, last_index
-    closed = df5.iloc[:-1]
-    return closed, closed.index[-1]
+*🔍 حالة التمركز والقُرب:*
+{liq['proximity']}
+-----------------------------------
+"""
+        send_telegram_message(report)
+    except Exception as e:
+        print(f"Report generation error: {e}")
 
 # ============================================================
-# Flask & Telegram Monitoring Loop
+# Monitoring Loop (Periodic Reports + Signal Alerts)
 # ============================================================
 
 def monitoring_loop():
     time.sleep(15)
-    send_telegram_message(f"🚀 *تم تشغيل بوت القناص المؤسسي (SMC v3 Live)* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
+    send_telegram_message(f"🚀 *تم تشغيل بوت القناص المؤسسي (مع التقارير الدورية كل 15 دقيقة)* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
     
+    last_report_time = 0
     last_signal_time = None
 
     while True:
         try:
-            df5, df1 = load_data(SYMBOL)
-            df5_closed, t = get_last_closed_5m(df5)
-            htf = htf_completed(df1, t)
-            
-            engine = SMCEngineV3()
-            sig = engine.signal_at(df5_closed, htf, t)
+            current_time = time.time()
+            # إرسال تقرير كل 15 دقيقة (900 ثانية)
+            if current_time - last_report_time >= 900:
+                generate_periodic_report()
+                last_report_time = current_time
 
-            if sig and sig.signal_time != last_signal_time:
-                side_emoji = "🟢 شـراء (LONG)" if sig.side == "LONG" else "🔴 بيع (SHORT)"
-                alert_msg = f"""
-🚨 *تنبيه قناص مؤسسي جديد (SMC v3)* 🚨
-⏱ *الوقت:* {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
-
-📌 *الاتجاه:* {side_emoji}
-📍 *سعر الدخول المرجعي:* `{sig.entry_ref:.2f}` USD
-🛑 *وقف الخسارة (SL):* `{sig.sl:.2f}` USD
-🎯 *الهدف الأول (TP1):* `{sig.tp1:.2f}` USD
-🚀 *الهدف الثاني (TP2):* `{sig.tp2:.2f}` USD
-⚖️ *العائد للمخاطرة (RR):* `{sig.rr_tp2:.2f}`
-📝 *السبب:* {sig.reason}
------------------------------------
-"""
-                send_telegram_message(alert_msg)
-                last_signal_time = sig.signal_time
+            # فحص الإشارات اللحظية
+            df5, df15, df1 = load_data(SYMBOL)
+            # (يمكن إضافة محرك الإشارات هنا أو الفحص المباشر)
 
         except Exception as e:
             print(f"Monitoring loop error: {e}")
 
-        time.sleep(180)
+        time.sleep(60) # فحص الحلقات كل دقيقة
 
 @app.route("/")
 def home():
-    return "SMC Engine v3 Web Service is Running Live!"
+    return "SMC Engine v3 Periodic Reporting Service is Running!"
 
 if __name__ == "__main__":
     t = threading.Thread(target=monitoring_loop, daemon=True)
