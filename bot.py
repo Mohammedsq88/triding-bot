@@ -42,23 +42,23 @@ def send_telegram_message(message):
         return False
 
 # ============================================================
-# ADVANCED TWELVE DATA API WRAPPER WITH ERROR INSPECTION
+# ROBUST TWELVE DATA API WRAPPER WITH 30s TIMEOUT & RETRIES
 # ============================================================
 
 def call_twelve_data(endpoint, params):
     url = f"{TD_URL}/{endpoint}"
     params["apikey"] = TWELVE_DATA_API_KEY
-    for attempt in range(3):
+    for attempt in range(4):
         try:
-            r = requests.get(url, params=params, timeout=20)
+            # زيادة مهلة الاتصال إلى 30 ثانية لتجنب مشاكل بطء الشبكة اللحظي
+            r = requests.get(url, params=params, timeout=30)
             if r.status_code == 429:
-                print(f"Rate limit hit (429) on {endpoint}. Sleeping for 30s...")
+                print(f"Rate limit hit (429) on {endpoint}. Sleeping for 30s (Attempt {attempt+1})...")
                 time.sleep(30)
                 continue
             r.raise_for_status()
             data = r.json()
             
-            # التحقق إذا أرجع الموقع خطأ داخلي (مثل تجاوز الحد)
             if isinstance(data, dict) and (data.get("status") == "error" or "code" in data and data["code"] != 200):
                 err_msg = data.get("message", "Unknown API Error")
                 print(f"Twelve Data Internal Error: {err_msg}")
@@ -67,9 +67,12 @@ def call_twelve_data(endpoint, params):
                     continue
                 return data
             return data
+        except requests.exceptions.Timeout:
+            print(f"Timeout error on {endpoint} (Attempt {attempt+1}/4). Retrying...")
+            time.sleep(5)
         except Exception as e:
             print(f"API Connection Error on {endpoint}: {e}")
-            time.sleep(10)
+            time.sleep(5)
     return None
 
 def get_live_gold():
@@ -297,10 +300,10 @@ def generate_periodic_report():
         price = get_live_gold()
         if price is None:
             price = 0.0
-        time.sleep(8)
+        time.sleep(5)
             
         df5 = remove_incomplete_candle(get_candles("5min", 200), 5)
-        time.sleep(8)
+        time.sleep(5)
         
         df1h = remove_incomplete_candle(get_candles("1h", 150), 60)
         
@@ -349,9 +352,9 @@ def generate_periodic_report():
 
 def monitoring_loop():
     time.sleep(5)
-    send_telegram_message("تم تشغيل بوت SMC v4 (حماية واكتشاف أخطاء Twelve Data مفعلة)")
+    send_telegram_message("تم تشغيل بوت SMC v4 (مهلة الاتصال 30 ثانية ونظام إعادة المحاولة مفعل)")
     
-    print("Sending instant startup report with safe delays...")
+    print("Sending instant startup report with safe timeouts...")
     generate_periodic_report()
     
     last_report_time = time.time()
@@ -365,7 +368,7 @@ def monitoring_loop():
                 last_report_time = current_time
 
             df5 = remove_incomplete_candle(get_candles("5min", 200), 5)
-            time.sleep(8)
+            time.sleep(5)
             df1h = remove_incomplete_candle(get_candles("1h", 150), 60)
             htf_bias = get_smart_bias(df1h)
             
@@ -375,7 +378,7 @@ def monitoring_loop():
                 if sig_key != last_signal_time:
                     ob_info = f"{signal['ob']['type']} [{signal['ob']['low']:.2f} - {signal['ob']['high']:.2f}]" if signal["ob"] else "غير متوفر"
                     alert_msg = f"""
-[تنبيه Model #1 - أحدث السيولة ERL]
+[تنبيه Model #1 - أهداف السيولة ERL]
 الوقت: {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
 
 الاتجاه: {signal['direction']}
@@ -397,7 +400,7 @@ def monitoring_loop():
 
 @app.route("/")
 def home():
-    return "SMC Advanced Error-Handled Engine is Running Live!"
+    return "SMC 30s Timeout Protected Engine is Running Live!"
 
 if __name__ == "__main__":
     t = threading.Thread(target=monitoring_loop, daemon=True)
