@@ -117,7 +117,6 @@ def confirmed_swings(df, w=3):
 def get_smart_bias(df):
     if len(df) < 30: return "NEUTRAL (محايد)"
     
-    # 1. فحص السوينغات المؤكدة التقليدية
     highs, lows = confirmed_swings(df, SWING_W)
     if len(highs) >= 2 and len(lows) >= 2:
         if highs[-1]["price"] > highs[-2]["price"] and lows[-1]["price"] > lows[-2]["price"]:
@@ -125,7 +124,6 @@ def get_smart_bias(df):
         if highs[-1]["price"] < highs[-2]["price"] and lows[-1]["price"] < lows[-2]["price"]:
             return "BEARISH (هابط 📉)"
             
-    # 2. فحص الزخم واختراق النطاق (لتجنب البقاء في وضع "محايد" أثناء الانفجارات السعرية)
     recent_slice = df.iloc[-25:-1]
     if not recent_slice.empty:
         recent_high = recent_slice["high"].max()
@@ -136,10 +134,8 @@ def get_smart_bias(df):
         atr_val = float(atr_series.iloc[-1]) if not atr_series.empty and not pd.isna(atr_series.iloc[-1]) else 2.0
         body = abs(curr["close"] - curr["open"])
         
-        # إذا حصل اختراق قوي للقمة السابقة مع شمعة ذات زخم (Displacement)
         if curr["close"] > recent_high and body >= (atr_val * 1.0):
             return "BULLISH (صاعد 📈)"
-        # إذا حصل كسر قوي للقاع السابق مع شمعة ذات زخم
         if curr["close"] < recent_low and body >= (atr_val * 1.0):
             return "BEARISH (هابط 📉)"
 
@@ -327,15 +323,20 @@ def generate_periodic_report():
         print("Periodic Report Error:", e)
 
 def monitoring_loop():
-    time.sleep(15)
-    send_telegram_message(f"🚀 *تم تشغيل بوت SMC v4 (دالة الاتجاه الذكية والمحمية)* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
+    time.sleep(10)
+    send_telegram_message(f"🚀 *تم تشغيل بوت SMC v4 (التقرير الفوري مُفعل)* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
     
-    last_report_time = 0
+    # إرسال تقرير فوري أول ما يشتغل البوت لضمان عمل النظام والتأكد من وصول الرسائل
+    print("Sending instant startup report...")
+    generate_periodic_report()
+    
+    last_report_time = time.time()
     last_signal_time = None
 
     while True:
         try:
             current_time = time.time()
+            # إرسال تقرير دوري كل 15 دقيقة (900 ثانية)
             if current_time - last_report_time >= 900:
                 generate_periodic_report()
                 last_report_time = current_time
@@ -372,7 +373,7 @@ def monitoring_loop():
 
 @app.route("/")
 def home():
-    return "SMC Smart Bias Engine is Running Live!"
+    return "SMC Engine with Instant Report is Running Live!"
 
 if __name__ == "__main__":
     t = threading.Thread(target=monitoring_loop, daemon=True)
