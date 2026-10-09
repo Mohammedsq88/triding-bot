@@ -320,13 +320,14 @@ def generate_periodic_report():
 """
         send_telegram_message(report)
     except Exception as e:
+        error_msg = f"⚠️ *خطأ في إنشاء التقرير الدوري:* `{str(e)}`"
         print("Periodic Report Error:", e)
+        send_telegram_message(error_msg)
 
 def monitoring_loop():
     time.sleep(10)
-    send_telegram_message(f"🚀 *تم تشغيل بوت SMC v4 (التقرير الفوري مُفعل)* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
+    send_telegram_message(f"🚀 *تم تشغيل بوت SMC v4 (التقرير الفوري مُفعل مع كشف الأخطاء)* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
     
-    # إرسال تقرير فوري أول ما يشتغل البوت لضمان عمل النظام والتأكد من وصول الرسائل
     print("Sending instant startup report...")
     generate_periodic_report()
     
@@ -336,7 +337,6 @@ def monitoring_loop():
     while True:
         try:
             current_time = time.time()
-            # إرسال تقرير دوري كل 15 دقيقة (900 ثانية)
             if current_time - last_report_time >= 900:
                 generate_periodic_report()
                 last_report_time = current_time
@@ -373,7 +373,7 @@ def monitoring_loop():
 
 @app.route("/")
 def home():
-    return "SMC Engine with Instant Report is Running Live!"
+    return "SMC Engine with Debug Logging is Running Live!"
 
 if __name__ == "__main__":
     t = threading.Thread(target=monitoring_loop, daemon=True)
