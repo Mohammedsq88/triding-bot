@@ -42,7 +42,7 @@ def send_telegram_message(message):
         return False
 
 # ============================================================
-# ROBUST TWELVE DATA API WRAPPER WITH 429 RETRY PROTECTION
+# ADVANCED TWELVE DATA API WRAPPER WITH ERROR INSPECTION
 # ============================================================
 
 def call_twelve_data(endpoint, params):
@@ -52,20 +52,30 @@ def call_twelve_data(endpoint, params):
         try:
             r = requests.get(url, params=params, timeout=20)
             if r.status_code == 429:
-                print(f"Rate limit hit (429) on {endpoint}. Sleeping for 30s (Attempt {attempt+1})...")
+                print(f"Rate limit hit (429) on {endpoint}. Sleeping for 30s...")
                 time.sleep(30)
                 continue
             r.raise_for_status()
-            return r.json()
+            data = r.json()
+            
+            # التحقق إذا أرجع الموقع خطأ داخلي (مثل تجاوز الحد)
+            if isinstance(data, dict) and (data.get("status") == "error" or "code" in data and data["code"] != 200):
+                err_msg = data.get("message", "Unknown API Error")
+                print(f"Twelve Data Internal Error: {err_msg}")
+                if data.get("code") == 429:
+                    time.sleep(30)
+                    continue
+                return data
+            return data
         except Exception as e:
-            print(f"API Error on {endpoint}: {e}")
+            print(f"API Connection Error on {endpoint}: {e}")
             time.sleep(10)
     return None
 
 def get_live_gold():
     try:
         data = call_twelve_data("price", {"symbol": SYMBOL})
-        if not data or "price" not in data:
+        if not data or not isinstance(data, dict) or "price" not in data:
             return None
         return float(data["price"])
     except Exception as e:
@@ -79,8 +89,12 @@ def get_candles(interval, outputsize=300):
         "outputsize": outputsize,
         "format": "JSON"
     })
-    if not data or "values" not in data:
-        raise ValueError(f"Twelve Data Error or Rate Limit: {data}")
+    if not data or not isinstance(data, dict):
+        raise ValueError("فشل الاتصال بمزود البيانات أو انتهت مهلة الطلب.")
+    
+    if "values" not in data:
+        err_msg = data.get("message", "تم تجاوز الحد المسموح أو خطأ في الـ API")
+        raise ValueError(f"Twelve Data Error: {err_msg}")
     
     df = pd.DataFrame(data["values"])
     df["datetime"] = pd.to_datetime(df["datetime"], utc=True)
@@ -283,10 +297,10 @@ def generate_periodic_report():
         price = get_live_gold()
         if price is None:
             price = 0.0
-        time.sleep(10) # فاصل زمني آمن لمنع حظر الطلبات
+        time.sleep(8)
             
         df5 = remove_incomplete_candle(get_candles("5min", 200), 5)
-        time.sleep(10) # فاصل زمني آمن آخر
+        time.sleep(8)
         
         df1h = remove_incomplete_candle(get_candles("1h", 150), 60)
         
@@ -335,7 +349,7 @@ def generate_periodic_report():
 
 def monitoring_loop():
     time.sleep(5)
-    send_telegram_message("تم تشغيل بوت SMC v4 (نظام الحماية المتقدم لطلبات API مفعل بنجاح)")
+    send_telegram_message("تم تشغيل بوت SMC v4 (حماية واكتشاف أخطاء Twelve Data مفعلة)")
     
     print("Sending instant startup report with safe delays...")
     generate_periodic_report()
@@ -361,7 +375,7 @@ def monitoring_loop():
                 if sig_key != last_signal_time:
                     ob_info = f"{signal['ob']['type']} [{signal['ob']['low']:.2f} - {signal['ob']['high']:.2f}]" if signal["ob"] else "غير متوفر"
                     alert_msg = f"""
-[تنبيه Model #1 - أهداف السيولة ERL]
+[تنبيه Model #1 - أحدث السيولة ERL]
 الوقت: {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
 
 الاتجاه: {signal['direction']}
@@ -383,7 +397,7 @@ def monitoring_loop():
 
 @app.route("/")
 def home():
-    return "SMC Safe API Rate-Limited Engine is Running Live!"
+    return "SMC Advanced Error-Handled Engine is Running Live!"
 
 if __name__ == "__main__":
     t = threading.Thread(target=monitoring_loop, daemon=True)
