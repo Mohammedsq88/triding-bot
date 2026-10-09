@@ -16,6 +16,11 @@ CHAT_ID = os.getenv("CHAT_ID")
 SYMBOL = "XAU/USD"
 TD_URL = "https://api.twelvedata.com"
 
+# ترويسة متصفح وهمية لتجاوز حظر الـ Cloudflare وفلترات السيرفرات على منصات الاستضافة
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
+
 SWING_W = 3
 ATR_LEN = 14
 ATR_SL_MULT = 1.5
@@ -42,7 +47,7 @@ def send_telegram_message(message):
         return False
 
 # ============================================================
-# ROBUST TWELVE DATA API WRAPPER WITH 30s TIMEOUT & RETRIES
+# ROBUST TWELVE DATA API WRAPPER WITH HEADERS & TIMEOUT
 # ============================================================
 
 def call_twelve_data(endpoint, params):
@@ -50,10 +55,10 @@ def call_twelve_data(endpoint, params):
     params["apikey"] = TWELVE_DATA_API_KEY
     for attempt in range(4):
         try:
-            # زيادة مهلة الاتصال إلى 30 ثانية لتجنب مشاكل بطء الشبكة اللحظي
-            r = requests.get(url, params=params, timeout=30)
+            # استخدام الـ HEADERS لتجنب حظر السيرفرات السحابية
+            r = requests.get(url, params=params, headers=HEADERS, timeout=30)
             if r.status_code == 429:
-                print(f"Rate limit hit (429) on {endpoint}. Sleeping for 30s (Attempt {attempt+1})...")
+                print(f"Rate limit hit (429) on {endpoint}. Sleeping for 30s...")
                 time.sleep(30)
                 continue
             r.raise_for_status()
@@ -300,10 +305,10 @@ def generate_periodic_report():
         price = get_live_gold()
         if price is None:
             price = 0.0
-        time.sleep(5)
+        time.sleep(3)
             
         df5 = remove_incomplete_candle(get_candles("5min", 200), 5)
-        time.sleep(5)
+        time.sleep(3)
         
         df1h = remove_incomplete_candle(get_candles("1h", 150), 60)
         
@@ -352,9 +357,9 @@ def generate_periodic_report():
 
 def monitoring_loop():
     time.sleep(5)
-    send_telegram_message("تم تشغيل بوت SMC v4 (مهلة الاتصال 30 ثانية ونظام إعادة المحاولة مفعل)")
+    send_telegram_message("تم تشغيل بوت SMC v4 (تجاوز حظر السيرفرات بواسطة ترويسة المتصفح مفعل)")
     
-    print("Sending instant startup report with safe timeouts...")
+    print("Sending instant startup report with headers...")
     generate_periodic_report()
     
     last_report_time = time.time()
@@ -400,7 +405,7 @@ def monitoring_loop():
 
 @app.route("/")
 def home():
-    return "SMC 30s Timeout Protected Engine is Running Live!"
+    return "SMC Header-Protected Engine is Running Live!"
 
 if __name__ == "__main__":
     t = threading.Thread(target=monitoring_loop, daemon=True)
