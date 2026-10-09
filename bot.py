@@ -40,13 +40,17 @@ def send_telegram_message(message):
         return False
 
 # ============================================================
-# TWELVE DATA API FUNCTIONS
+# TWELVE DATA API FUNCTIONS WITH RATE LIMIT HANDLING (429)
 # ============================================================
 
 def get_live_gold():
     try:
         params = {"symbol": SYMBOL, "apikey": TWELVE_DATA_API_KEY}
         r = requests.get("https://api.twelvedata.com/price", params=params, timeout=10)
+        if r.status_code == 429:
+            print("Rate limit hit (429) on price. Sleeping for 60s...")
+            time.sleep(60)
+            return None
         r.raise_for_status()
         data = r.json()
         if "price" not in data:
@@ -65,6 +69,11 @@ def get_candles(interval, outputsize=300):
         "format": "JSON"
     }
     r = requests.get(TD_URL, params=params, timeout=20)
+    if r.status_code == 429:
+        print(f"Rate limit hit (429) on candles ({interval}). Sleeping for 60s...")
+        time.sleep(60)
+        r = requests.get(TD_URL, params=params, timeout=20)
+    
     r.raise_for_status()
     data = r.json()
     if "values" not in data:
@@ -208,19 +217,14 @@ def generate_signal(df5, df1h, htf_bias):
 
     entry = float(df5.iloc[-1]["close"])
     
-    # تحديد وقف الخسارة والهدف الأول بناءً على الـ ATR
     if direction == "LONG":
         sl = entry - atr_value * ATR_SL_MULT
         tp1 = entry + atr_value * ATR_TP_MULT
-        
-        # ربط الهدف الثاني (TP2) بالسيولة الخارجية الكبرى (ERL Highs) على فريم 1H
         erl_highs = [h["price"] for h in highs_1h if h["price"] > entry] if highs_1h else []
         tp2 = min(erl_highs) if erl_highs else (entry + atr_value * ATR_TP_MULT * 2)
     else:
         sl = entry + atr_value * ATR_SL_MULT
         tp1 = entry - atr_value * ATR_TP_MULT
-        
-        # ربط الهدف الثاني (TP2) بالسيولة الخارجية الكبرى (ERL Lows) على فريم 1H
         erl_lows = [l["price"] for l in lows_1h if l["price"] < entry] if lows_1h else []
         tp2 = max(erl_lows) if erl_lows else (entry - atr_value * ATR_TP_MULT * 2)
 
@@ -300,7 +304,7 @@ def generate_periodic_report():
 
 def monitoring_loop():
     time.sleep(15)
-    send_telegram_message(f"🚀 *تم تشغيل بوت SMC v4 (الأهداف مرتبطة بالسيولة ERL)* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
+    send_telegram_message(f"🚀 *تم تشغيل بوت SMC v4 (محمي ضد حظر 429)* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
     
     last_report_time = 0
     last_signal_time = None
@@ -340,11 +344,12 @@ def monitoring_loop():
         except Exception as e:
             print("Monitoring loop error:", e)
 
-        time.sleep(60)
+        # التوقف لمدة 150 ثانية (2.5 دقيقة) بين كل فحص وآخر لحماية الـ API من الحظر
+        time.sleep(150)
 
 @app.route("/")
 def home():
-    return "SMC Liquidity-Targeted Engine is Running Live!"
+    return "SMC Rate-Limited Protected Engine is Running Live!"
 
 if __name__ == "__main__":
     t = threading.Thread(target=monitoring_loop, daemon=True)
