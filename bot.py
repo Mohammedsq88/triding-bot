@@ -110,15 +110,39 @@ def confirmed_swings(df, w=3):
             lows.append({"index": i, "time": df.index[i], "price": l[i]})
     return highs, lows
 
-def get_htf_bias(df):
-    if len(df) < 30: return "NEUTRAL"
-    highs, lows = confirmed_swings(df, SWING_W)
-    if len(highs) < 2 or len(lows) < 2: return "NEUTRAL"
+# ============================================================
+# SMART BIAS FUNCTION (1H & 5M) WITH MOMENTUM & BREAKOUT CHECK
+# ============================================================
+
+def get_smart_bias(df):
+    if len(df) < 30: return "NEUTRAL (محايد)"
     
-    if highs[-1]["price"] > highs[-2]["price"] and lows[-1]["price"] > lows[-2]["price"]:
-        return "BULLISH (صاعد 📈)"
-    if highs[-1]["price"] < highs[-2]["price"] and lows[-1]["price"] < lows[-2]["price"]:
-        return "BEARISH (هابط 📉)"
+    # 1. فحص السوينغات المؤكدة التقليدية
+    highs, lows = confirmed_swings(df, SWING_W)
+    if len(highs) >= 2 and len(lows) >= 2:
+        if highs[-1]["price"] > highs[-2]["price"] and lows[-1]["price"] > lows[-2]["price"]:
+            return "BULLISH (صاعد 📈)"
+        if highs[-1]["price"] < highs[-2]["price"] and lows[-1]["price"] < lows[-2]["price"]:
+            return "BEARISH (هابط 📉)"
+            
+    # 2. فحص الزخم واختراق النطاق (لتجنب البقاء في وضع "محايد" أثناء الانفجارات السعرية)
+    recent_slice = df.iloc[-25:-1]
+    if not recent_slice.empty:
+        recent_high = recent_slice["high"].max()
+        recent_low = recent_slice["low"].min()
+        curr = df.iloc[-1]
+        
+        atr_series = calculate_atr(df, ATR_LEN)
+        atr_val = float(atr_series.iloc[-1]) if not atr_series.empty and not pd.isna(atr_series.iloc[-1]) else 2.0
+        body = abs(curr["close"] - curr["open"])
+        
+        # إذا حصل اختراق قوي للقمة السابقة مع شمعة ذات زخم (Displacement)
+        if curr["close"] > recent_high and body >= (atr_val * 1.0):
+            return "BULLISH (صاعد 📈)"
+        # إذا حصل كسر قوي للقاع السابق مع شمعة ذات زخم
+        if curr["close"] < recent_low and body >= (atr_val * 1.0):
+            return "BEARISH (هابط 📉)"
+
     return "NEUTRAL (محايد)"
 
 def detect_fvg(df):
@@ -261,8 +285,8 @@ def generate_periodic_report():
         df5 = remove_incomplete_candle(get_candles("5min", 200), 5)
         df1h = remove_incomplete_candle(get_candles("1h", 150), 60)
         
-        bias_1h = get_htf_bias(df1h)
-        bias_5m = get_htf_bias(df5)
+        bias_1h = get_smart_bias(df1h)
+        bias_5m = get_smart_bias(df5)
         
         highs_1h, lows_1h = confirmed_swings(df1h, SWING_W)
         highs_5m, lows_5m = confirmed_swings(df5, SWING_W)
@@ -286,7 +310,7 @@ def generate_periodic_report():
 
 *📍 السعر الفوري اللحظي:* `{price:.2f}` USD
 
-*📈 انحياز الأطر الزمنية:*
+*📈 انحياز الأطر الزمنية (الذكي):*
 • إطار الساعة (1H): {bias_1h}
 • إطار الـ 5 دقائق (5M): {bias_5m}
 
@@ -304,7 +328,7 @@ def generate_periodic_report():
 
 def monitoring_loop():
     time.sleep(15)
-    send_telegram_message(f"🚀 *تم تشغيل بوت SMC v4 (محمي ضد حظر 429)* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
+    send_telegram_message(f"🚀 *تم تشغيل بوت SMC v4 (دالة الاتجاه الذكية والمحمية)* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
     
     last_report_time = 0
     last_signal_time = None
@@ -318,7 +342,7 @@ def monitoring_loop():
 
             df5 = remove_incomplete_candle(get_candles("5min", 200), 5)
             df1h = remove_incomplete_candle(get_candles("1h", 150), 60)
-            htf_bias = get_htf_bias(df1h)
+            htf_bias = get_smart_bias(df1h)
             
             signal = generate_signal(df5, df1h, htf_bias)
             if signal:
@@ -344,12 +368,11 @@ def monitoring_loop():
         except Exception as e:
             print("Monitoring loop error:", e)
 
-        # التوقف لمدة 150 ثانية (2.5 دقيقة) بين كل فحص وآخر لحماية الـ API من الحظر
         time.sleep(150)
 
 @app.route("/")
 def home():
-    return "SMC Rate-Limited Protected Engine is Running Live!"
+    return "SMC Smart Bias Engine is Running Live!"
 
 if __name__ == "__main__":
     t = threading.Thread(target=monitoring_loop, daemon=True)
