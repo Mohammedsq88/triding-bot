@@ -14,7 +14,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 SYMBOL = "XAU/USD"
-TD_URL = "https://api.twelvedata.com/time_series"
+TD_URL = "https://api.twelvedata.com"
 
 SWING_W = 3
 ATR_LEN = 14
@@ -31,29 +31,41 @@ def send_telegram_message(message):
         print("Telegram Token or Chat ID missing.")
         return False
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    payload = {"chat_id": CHAT_ID, "text": message}
     try:
         response = requests.post(url, json=payload, timeout=10)
+        if response.status_code != 200:
+            print("Telegram API Error Response:", response.text)
         return response.status_code == 200
     except Exception as e:
         print("Telegram Error:", e)
         return False
 
 # ============================================================
-# TWELVE DATA API FUNCTIONS WITH RATE LIMIT HANDLING (429)
+# ROBUST TWELVE DATA API WRAPPER WITH 429 RETRY PROTECTION
 # ============================================================
+
+def call_twelve_data(endpoint, params):
+    url = f"{TD_URL}/{endpoint}"
+    params["apikey"] = TWELVE_DATA_API_KEY
+    for attempt in range(3):
+        try:
+            r = requests.get(url, params=params, timeout=20)
+            if r.status_code == 429:
+                print(f"Rate limit hit (429) on {endpoint}. Sleeping for 30s (Attempt {attempt+1})...")
+                time.sleep(30)
+                continue
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            print(f"API Error on {endpoint}: {e}")
+            time.sleep(10)
+    return None
 
 def get_live_gold():
     try:
-        params = {"symbol": SYMBOL, "apikey": TWELVE_DATA_API_KEY}
-        r = requests.get("https://api.twelvedata.com/price", params=params, timeout=10)
-        if r.status_code == 429:
-            print("Rate limit hit (429) on price. Sleeping for 60s...")
-            time.sleep(60)
-            return None
-        r.raise_for_status()
-        data = r.json()
-        if "price" not in data:
+        data = call_twelve_data("price", {"symbol": SYMBOL})
+        if not data or "price" not in data:
             return None
         return float(data["price"])
     except Exception as e:
@@ -61,23 +73,14 @@ def get_live_gold():
         return None
 
 def get_candles(interval, outputsize=300):
-    params = {
+    data = call_twelve_data("time_series", {
         "symbol": SYMBOL,
         "interval": interval,
         "outputsize": outputsize,
-        "apikey": TWELVE_DATA_API_KEY,
         "format": "JSON"
-    }
-    r = requests.get(TD_URL, params=params, timeout=20)
-    if r.status_code == 429:
-        print(f"Rate limit hit (429) on candles ({interval}). Sleeping for 60s...")
-        time.sleep(60)
-        r = requests.get(TD_URL, params=params, timeout=20)
-    
-    r.raise_for_status()
-    data = r.json()
-    if "values" not in data:
-        raise ValueError(f"Twelve Data Error: {data}")
+    })
+    if not data or "values" not in data:
+        raise ValueError(f"Twelve Data Error or Rate Limit: {data}")
     
     df = pd.DataFrame(data["values"])
     df["datetime"] = pd.to_datetime(df["datetime"], utc=True)
@@ -120,9 +123,9 @@ def get_smart_bias(df):
     highs, lows = confirmed_swings(df, SWING_W)
     if len(highs) >= 2 and len(lows) >= 2:
         if highs[-1]["price"] > highs[-2]["price"] and lows[-1]["price"] > lows[-2]["price"]:
-            return "BULLISH (صاعد 📈)"
+            return "BULLISH (صاعد)"
         if highs[-1]["price"] < highs[-2]["price"] and lows[-1]["price"] < lows[-2]["price"]:
-            return "BEARISH (هابط 📉)"
+            return "BEARISH (هابط)"
             
     recent_slice = df.iloc[-25:-1]
     if not recent_slice.empty:
@@ -135,9 +138,9 @@ def get_smart_bias(df):
         body = abs(curr["close"] - curr["open"])
         
         if curr["close"] > recent_high and body >= (atr_val * 1.0):
-            return "BULLISH (صاعد 📈)"
+            return "BULLISH (صاعد)"
         if curr["close"] < recent_low and body >= (atr_val * 1.0):
-            return "BEARISH (هابط 📉)"
+            return "BEARISH (هابط)"
 
     return "NEUTRAL (محايد)"
 
@@ -278,7 +281,13 @@ def generate_signal(df5, df1h, htf_bias):
 def generate_periodic_report():
     try:
         price = get_live_gold()
+        if price is None:
+            price = 0.0
+        time.sleep(10) # فاصل زمني آمن لمنع حظر الطلبات
+            
         df5 = remove_incomplete_candle(get_candles("5min", 200), 5)
+        time.sleep(10) # فاصل زمني آمن آخر
+        
         df1h = remove_incomplete_candle(get_candles("1h", 150), 60)
         
         bias_1h = get_smart_bias(df1h)
@@ -293,42 +302,42 @@ def generate_periodic_report():
         irl_high = highs_5m[-1]["price"] if highs_5m else (price + 4 if price else 0)
         irl_low = lows_5m[-1]["price"] if lows_5m else (price - 4 if price else 0)
         
-        if price:
+        if price > 0:
             dist_erl = min(abs(price - erl_high), abs(price - erl_low))
             dist_irl = min(abs(price - irl_high), abs(price - irl_low))
-            proximity = "🎯 السعر قريب من السيولة الداخلية (IRL)" if dist_irl <= dist_erl else "🚀 السعر متجه نحو السيولة الخارجية الكبرى (ERL)"
+            proximity = "السعر قريب من السيولة الداخلية (IRL)" if dist_irl <= dist_erl else "السعر متجه نحو السيولة الخارجية الكبرى (ERL)"
         else:
             proximity = "غير متوفر"
 
         report = f"""
-📊 *التقرير المؤسسي الدوري (XAU/USD)* 📊
-⏱ *الوقت (بغداد):* {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
+[التقرير المؤسسي الدوري XAU/USD]
+الوقت (بغداد): {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
 
-*📍 السعر الفوري اللحظي:* `{price:.2f}` USD
+السعر الفوري اللحظي: {price:.2f} USD
 
-*📈 انحياز الأطر الزمنية (الذكي):*
-• إطار الساعة (1H): {bias_1h}
-• إطار الـ 5 دقائق (5M): {bias_5m}
+انحياز الأطر الزمنية (الذكي):
+- إطار الساعة (1H): {bias_1h}
+- إطار الـ 5 دقائق (5M): {bias_5m}
 
-*💧 مستويات السيولة بالأرقام:*
-• السيولة الخارجية (ERL - 1H): `[قاع: {erl_low:.2f} — قمة: {erl_high:.2f}]`
-• السيولة الداخلية (IRL - 5M): `[قاع: {irl_low:.2f} — قمة: {irl_high:.2f}]`
+مستويات السيولة بالأرقام:
+- السيولة الخارجية (ERL - 1H): [قاع: {erl_low:.2f} -- قمة: {erl_high:.2f}]
+- السيولة الداخلية (IRL - 5M): [قاع: {irl_low:.2f} -- قمة: {irl_high:.2f}]
 
-*🔍 حالة القُرب:*
+حالة القُرب:
 {proximity}
 -----------------------------------
 """
         send_telegram_message(report)
     except Exception as e:
-        error_msg = f"⚠️ *خطأ في إنشاء التقرير الدوري:* `{str(e)}`"
+        error_msg = f"خطأ في إنشاء التقرير الدوري: {str(e)}"
         print("Periodic Report Error:", e)
         send_telegram_message(error_msg)
 
 def monitoring_loop():
-    time.sleep(10)
-    send_telegram_message(f"🚀 *تم تشغيل بوت SMC v4 (التقرير الفوري مُفعل مع كشف الأخطاء)* ⏱ {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}")
+    time.sleep(5)
+    send_telegram_message("تم تشغيل بوت SMC v4 (نظام الحماية المتقدم لطلبات API مفعل بنجاح)")
     
-    print("Sending instant startup report...")
+    print("Sending instant startup report with safe delays...")
     generate_periodic_report()
     
     last_report_time = time.time()
@@ -342,6 +351,7 @@ def monitoring_loop():
                 last_report_time = current_time
 
             df5 = remove_incomplete_candle(get_candles("5min", 200), 5)
+            time.sleep(8)
             df1h = remove_incomplete_candle(get_candles("1h", 150), 60)
             htf_bias = get_smart_bias(df1h)
             
@@ -349,18 +359,18 @@ def monitoring_loop():
             if signal:
                 sig_key = (signal["direction"], round(signal["entry"], 2))
                 if sig_key != last_signal_time:
-                    ob_info = f"🔹 {signal['ob']['type']} `[{signal['ob']['low']:.2f} - {signal['ob']['high']:.2f}]`" if signal["ob"] else "غير متوفر"
+                    ob_info = f"{signal['ob']['type']} [{signal['ob']['low']:.2f} - {signal['ob']['high']:.2f}]" if signal["ob"] else "غير متوفر"
                     alert_msg = f"""
-🚨 *تنبيه Model #1 (أهداف السيولة ERL)* 🚨
-⏱ *الوقت:* {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
+[تنبيه Model #1 - أهداف السيولة ERL]
+الوقت: {get_baghdad_time().strftime('%Y-%m-%d %H:%M')}
 
-📌 *الاتجاه:* {signal['direction']}
-📍 *الدخول:* `{signal['entry']:.2f}`
-🛑 *وقف الخسارة:* `{signal['sl']:.2f}`
-🎯 *الهدف الأول:* `{signal['tp1']:.2f}`
-🚀 *الهدف الثاني (سيولة ERL):* `{signal['tp2']:.2f}`
-⚖️ *العائد للمخاطرة:* `1:{signal['rr']:.2f}`
-📦 *الأوردر بلوك:* {ob_info}
+الاتجاه: {signal['direction']}
+الدخول: {signal['entry']:.2f}
+وقف الخسارة: {signal['sl']:.2f}
+الهدف الأول: {signal['tp1']:.2f}
+الهدف الثاني (سيولة ERL): {signal['tp2']:.2f}
+العائد للمخاطرة: 1:{signal['rr']:.2f}
+الأوردر بلوك: {ob_info}
 -----------------------------------
 """
                     send_telegram_message(alert_msg)
@@ -373,7 +383,7 @@ def monitoring_loop():
 
 @app.route("/")
 def home():
-    return "SMC Engine with Debug Logging is Running Live!"
+    return "SMC Safe API Rate-Limited Engine is Running Live!"
 
 if __name__ == "__main__":
     t = threading.Thread(target=monitoring_loop, daemon=True)
